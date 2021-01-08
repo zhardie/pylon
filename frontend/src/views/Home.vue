@@ -73,7 +73,7 @@ export default {
     ProxyDetails
   },
   mounted: function () {
-    http.get('/config').then(response => {
+    http.get('/config', {port: 3001}).then(response => {
       this.config = response.data
     }).catch(error => {
       console.log(error)
