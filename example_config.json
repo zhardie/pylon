@@ -1,0 +1,15 @@
+{
+    "tldn": "yourdomain.com",
+    "allowed_users": [
+    ],
+    "proxies": [
+    ],
+    "session_key": "put_some_random_garbage_here",
+    "cookie_expire": 0,
+    "oauth": {
+        "auth_url": "https://yourdomain.com/pylon/auth",
+        "client_id": "put_your_google_client_id_here",
+        "client_secret": "put_your_google_client_secret_here",
+        "redirect_url": "https://yourdomain.com/pylon/oauth2callback"
+    }
+}
