@@ -39,7 +39,7 @@
                 <td></td>
                 <td></td>
                 <td>
-                  <v-btn icon @click="addProxy({internal: null, external: null})"><v-icon>mdi-plus-circle</v-icon></v-btn>
+                  <v-btn icon @click="addProxy({internal: null, external: null, allowed_users: []})"><v-icon>mdi-plus-circle</v-icon></v-btn>
                 </td>
                 <td></td>
               </tr>
@@ -63,7 +63,7 @@ export default {
         proxies: [{
           internal: null,
           external: null,
-          users: []
+          allowed_users: []
         }]
       },
       proxy_details: false
@@ -91,7 +91,7 @@ export default {
     removeProxy(proxy) {
       this.config.proxies.splice( this.config.proxies.indexOf(proxy), 1 )
       if (this.config.proxies.length < 1) {
-        this.addProxy({internal: null, external: null, users: []})
+        this.addProxy({internal: null, external: null, allowed_users: []})
       }
     },
     addProxy(proxy) {
