@@ -185,6 +185,8 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 
         proxy_url := pd.Internal
         url, _ := url.Parse(proxy_url)
+	remoteAddr := r.RemoteAddr
+	r.RemoteAddr = ""
         proxy := httputil.NewSingleHostReverseProxy(url)
         proxy.Transport = &http.Transport{
                 TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -192,6 +194,10 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
         r.URL.Host = url.Host
         r.URL.Scheme = url.Scheme
         r.Header.Set("X-Forwarded-Host", r.Header.Get("Host"))
+	val, ok := r.Header["X-Forwarded-For"]
+	if !ok {
+		r.Header.Set("X-Forwarded-For", remoteAddr)
+	}
         r.Host = url.Host
 
         proxy.ServeHTTP(w, r)
