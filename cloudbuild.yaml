@@ -11,6 +11,10 @@
    entrypoint: 'bash'
    args: ['-c', 'docker push $$USERNAME/pylon:1.0.1']
    secretEnv: ['USERNAME']
+ - name: 'gcr.io/cloud-builders/docker'
+   entrypoint: 'bash'
+   args: ['-c', 'docker image tag $$USERNAME/pylon:1.0.1 $$USERNAME/pylon:latest']
+   secretEnv: ['USERNAME']
  availableSecrets:
    secretManager:
    - versionName: projects/misc-zhardie/secrets/dockerhub_password/versions/1
