@@ -5,11 +5,11 @@
    secretEnv: ['USERNAME', 'PASSWORD']
  - name: 'gcr.io/cloud-builders/docker'
    entrypoint: 'bash'
-   args: ['-c', 'docker build -t $$USERNAME/pylon:1.0.2 .']
+   args: ['-c', 'docker build -t $$USERNAME/pylon:1.0.3 .']
    secretEnv: ['USERNAME']
  - name: 'gcr.io/cloud-builders/docker'
    entrypoint: 'bash'
-   args: ['-c', 'docker image tag $$USERNAME/pylon:1.0.2 $$USERNAME/pylon:latest']
+   args: ['-c', 'docker image tag $$USERNAME/pylon:1.0.3 $$USERNAME/pylon:latest']
    secretEnv: ['USERNAME']
  - name: 'gcr.io/cloud-builders/docker'
    entrypoint: 'bash'
