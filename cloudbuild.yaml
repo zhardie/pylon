@@ -1,0 +1,19 @@
+ steps:
+ - name: 'gcr.io/cloud-builders/docker'
+   entrypoint: 'bash'
+   args: ['-c', 'docker login --username=$$USERNAME --password=$$PASSWORD']
+   secretEnv: ['USERNAME', 'PASSWORD']
+ - name: 'gcr.io/cloud-builders/docker'
+   entrypoint: 'bash'
+   args: ['-c', 'docker build -t $$USERNAME/pylon:1.0.1 .']
+   secretEnv: ['USERNAME']
+ - name: 'gcr.io/cloud-builders/docker'
+   entrypoint: 'bash'
+   args: ['-c', 'docker push $$USERNAME/pylon:1.0.1']
+   secretEnv: ['USERNAME']
+ availableSecrets:
+   secretManager:
+   - versionName: projects/misc-zhardie/secrets/dockerhub_password/versions/1
+     env: 'PASSWORD'
+   - versionName: projects/misc-zhardie/secrets/dockerhub_username/versions/1
+     env: 'USERNAME'
