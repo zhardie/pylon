@@ -1,0 +1,90 @@
+<script>
+import { onMount } from 'svelte'
+import IconButton from '@smui/icon-button'
+import Textfield from '@smui/textfield'
+import DataTable, { Head, Body, Row, Cell } from '@smui/data-table'
+import ProxyDetail from '../lib/ProxyDetail.svelte'
+
+let config
+let proxyDetail
+
+onMount(async () => {
+    if (import.meta.env.DEV) {
+        config = {
+    "tldn": "bar.com",
+    "allowed_users": null,
+    "proxies": [
+        {
+            "internal": "http://192.168.1.1:1001",
+            "external": "foo.bar.com",
+            "allowed_users": [
+                "foo@bar.com"
+            ],
+            "unauthenticated_routes": []
+        },
+        {
+            "internal": "http://192.168.1.2:2002",
+            "external": "foo2.bar.com",
+            "allowed_users": [
+                "foo@bar.com"
+            ],
+            "unauthenticated_routes": []
+        }]}
+    } else {
+		const res = await fetch(`/config`)
+		config = await res.json()
+    }
+    })
+
+function deleteProxy(index) {
+    config.proxies.splice(index, 1)
+    if (config.proxies.length <= 0) {
+        addProxy({internal: null, external: null, allowed_users: [], unauthenticated_routes: []})
+    }
+    config = config
+}
+
+function addProxy(proxy) {
+    config.proxies = [...config.proxies, proxy]
+}
+</script>
+
+{#if config}
+<div>
+<DataTable table$aria-label="Proxy list" style="width: 100%;">
+    <Head>
+        <Row>
+          <Cell>External</Cell>
+          <Cell>Internal</Cell>
+          <Cell></Cell>
+          <Cell></Cell>
+        </Row>
+    </Head>
+    <Body>
+        {#each config.proxies as proxy, i}
+        <Row class="proxy_row">
+            <Cell>
+                <Textfield class="proxy_entry" variant="outlined" bind:value={proxy.external} />
+            </Cell>
+            <Cell>
+                <Textfield class="proxy_entry" variant="outlined" bind:value={proxy.internal} />
+            </Cell>
+            <Cell><IconButton class="material-icons" aria-label="Info" on:click={() => (proxyDetail = proxy)}>info</IconButton></Cell>
+            <Cell><IconButton class="material-icons" aria-label="Delete" on:click={() => (deleteProxy(i))}>delete</IconButton></Cell>
+        </Row>
+        {/each}
+    </Body>
+</DataTable>
+<ProxyDetail bind:config bind:proxyDetail />
+</div>
+{/if}
+
+<div class="mdc-typography--overline">{JSON.stringify(config)}</div>
+
+<style>
+    * :global(.proxy_entry) {
+        width: 100%;
+        margin-bottom: .5rem;
+        margin-top: .5rem;
+    }
+</style>
