@@ -3,9 +3,11 @@ import Router from 'svelte-spa-router'
 import Navigation from './lib/Navigation.svelte'
 import Home from './routes/Home.svelte'
 import NotFound from './routes/NotFound.svelte'
+import Test from './routes/Test.svelte';
 
 const routes = {
     '/': Home,
+    '/test': Test,
     '*': NotFound,
 }
 </script>

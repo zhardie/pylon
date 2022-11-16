@@ -1,14 +1,18 @@
-<script>
+<script lang="ts">
 import { onMount } from 'svelte'
 import IconButton from '@smui/icon-button'
 import Textfield from '@smui/textfield'
 import DataTable, { Head, Body, Row, Cell } from '@smui/data-table'
 import ProxyDetail from '../lib/ProxyDetail.svelte'
+import Snackbar, { Actions, Label } from '@smui/snackbar'
+import Button from '@smui/button'
 
 let config
 let proxyDetail
+let configSnackbar: Snackbar;
 
 onMount(async () => {
+    // Dev
     if (import.meta.env.DEV) {
         config = {
     "tldn": "bar.com",
@@ -31,6 +35,7 @@ onMount(async () => {
             "unauthenticated_routes": []
         }]}
     } else {
+        // Prod
 		const res = await fetch(`/config`)
 		config = await res.json()
     }
@@ -46,6 +51,22 @@ function deleteProxy(index) {
 
 function addProxy(proxy) {
     config.proxies = [...config.proxies, proxy]
+}
+
+async function saveConfig() {
+    // Dev
+    if (import.meta.env.DEV) {
+        configSnackbar.open()
+    } else {
+        //Prod
+        const res = await fetch('/config', {
+            method: 'POST',
+            body: JSON.stringify(config)
+        })
+
+        console.log(res.json())
+        configSnackbar.open()
+    }
 }
 </script>
 
@@ -73,11 +94,26 @@ function addProxy(proxy) {
             <Cell><IconButton class="material-icons" aria-label="Delete" on:click={() => (deleteProxy(i))}>delete</IconButton></Cell>
         </Row>
         {/each}
+        <Row>
+            <Cell></Cell>
+            <Cell></Cell>
+            <Cell></Cell>
+            <Cell><IconButton class="material-icons" aria-label="Add" on:click={saveConfig}>add</IconButton></Cell>
+        </Row>
     </Body>
 </DataTable>
 <ProxyDetail bind:config bind:proxyDetail />
 </div>
 {/if}
+<Button on:click={saveConfig}>
+    <Label>Save Config</Label>
+</Button>
+<Snackbar bind:this={configSnackbar}>
+    <Label>Saved Configuration</Label>
+    <Actions>
+      <IconButton class="material-icons" title="Dismiss">close</IconButton>
+    </Actions>
+</Snackbar>
 
 <div class="mdc-typography--overline">{JSON.stringify(config)}</div>
 
