@@ -12,7 +12,11 @@ const routes = {
 }
 </script>
 
-<link rel="stylesheet" href="node_modules/svelte-material-ui/bare.css" />
+<!-- <link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/svelte-material-ui@6.0.0/bare.min.css"
+/> -->
+
 <!-- Material Icons -->
 <link
   rel="stylesheet"
@@ -24,10 +28,10 @@ const routes = {
   href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,600,700"
 />
 
-<link
+<!-- <link
 rel="stylesheet"
 href="node_modules/@material/typography/dist/mdc.typography.css"
-/>
+/> -->
 
 <main>
   <Navigation />

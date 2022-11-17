@@ -8,6 +8,7 @@ import Textfield from '@smui/textfield'
 import IconButton from '@smui/icon-button'
 import Icon from '@smui/textfield/icon'
 import Button, { Label } from '@smui/button'
+import LayoutGrid, { Cell as GridCell } from '@smui/layout-grid'
 
 let newUser = null
 let newRoute = null
@@ -40,6 +41,7 @@ function removeRoute(route) {
 }
 </script>
 
+<div>
 {#if proxyDetail}
 <Dialog
   open
@@ -47,7 +49,9 @@ function removeRoute(route) {
   on:SMUIDialog:closed={() => {
     proxyDetail = null
   }}
+  style="width: 100%;"
 >
+<div class="pd-dialog-content">
 <Title id="proxy-details-title">{proxyDetail.external} > {proxyDetail.internal}</Title>
 <DataTable table$aria-label="User list" style="width: 100%;">
     <Head>
@@ -64,11 +68,12 @@ function removeRoute(route) {
         </Row>
         {/each}
         <Row>
-            <Cell><Textfield style="margin-top: .5rem; margin-bottom: .5rem;" variant="outlined" bind:value={newUser} /></Cell>
+            <Cell><Textfield class="pd-entry" variant="outlined" bind:value={newUser} /></Cell>
             <Cell><IconButton class="material-icons" aria-label="person_add" on:click={addUser}>person_add</IconButton></Cell>
         </Row>
     </Body>
 </DataTable>
+<br><br>
 <DataTable table$aria-label="User list" style="width: 100%;">
     <Head>
         <Row>
@@ -84,19 +89,24 @@ function removeRoute(route) {
         </Row>
         {/each}
         <Row>
-            <Cell><Textfield style="margin-top: .5rem; margin-bottom: .5rem;" variant="outlined" bind:value={newRoute} /></Cell>
-            <Cell><IconButton class="material-icons" aria-label="person_add" on:click={addRoute}>person_add</IconButton></Cell>
+            <Cell><Textfield class="pd-entry" variant="outlined" bind:value={newRoute} /></Cell>
+            <Cell><IconButton class="material-icons" aria-label="post_add" on:click={addRoute}>post_add</IconButton></Cell>
         </Row>
     </Body>
 </DataTable>
+</div>
 </Dialog>
-
 {/if}
+</div>
 
-<!-- <style>
-    * :global(.dt-entry) {
+<style>
+    * :global(.pd-entry) {
         width: 100%;
-        margin-bottom: 10px;
-        margin-top: 10px;
+        margin-top: .5rem;
+        margin-bottom: .5rem;
     }
-</style> -->
+
+    * :global(#proxy-details-title) {
+        margin-left: .5rem;
+    }
+</style>

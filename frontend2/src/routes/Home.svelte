@@ -4,8 +4,8 @@ import IconButton from '@smui/icon-button'
 import Textfield from '@smui/textfield'
 import DataTable, { Head, Body, Row, Cell } from '@smui/data-table'
 import ProxyDetail from '../lib/ProxyDetail.svelte'
-import Snackbar, { Actions, Label } from '@smui/snackbar'
-import Button from '@smui/button'
+import Snackbar, { Actions, Label as SnackLabel } from '@smui/snackbar'
+import Button, { Icon, Label } from '@smui/button'
 import LayoutGrid, { Cell as GridCell } from '@smui/layout-grid'
 
 let config
@@ -102,9 +102,10 @@ async function saveConfig() {
                 <Cell>
                     <Button on:click={saveConfig}>
                         <Label>Save Config</Label>
+                        <Icon class="material-icons">save</Icon>
                     </Button>
                     <Snackbar bind:this={configSnackbar}>
-                        <Label>Saved Configuration</Label>
+                        <SnackLabel>Saved Configuration</SnackLabel>
                         <Actions>
                         <IconButton class="material-icons" title="Dismiss">close</IconButton>
                         </Actions>
@@ -123,17 +124,6 @@ async function saveConfig() {
 </LayoutGrid>
 </div>
 
-
-<div>
-    <LayoutGrid>
-    <GridCell class="center_cell" span={10}>
-        <div class="mdc-typography--overline">{JSON.stringify(config)}</div>
-    </GridCell>
-    </LayoutGrid>
-</div>
-
-
-
 <style>
     * :global(.proxy_entry) {
         width: 100%;
@@ -142,25 +132,7 @@ async function saveConfig() {
     }
 
     * :global(.center_cell) {
-    /* height: 60px; */
-    /* display: flex; */
     justify-content: center;
     align-items: center;
-    /* margin-left: auto;
-    margin-right: auto; */
-    /* margin-left: 10%;
-    margin-right: 10%; */
-    background-color: orange;
-    /* background-color: var(--mdc-theme-secondary, #333);
-    color: var(--mdc-theme-on-secondary, #fff); */
-  }
-
-  .demo-cell {
-    height: 60px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background-color: var(--mdc-theme-secondary, #333);
-    color: var(--mdc-theme-on-secondary, #fff);
   }
 </style>
