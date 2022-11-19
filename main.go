@@ -172,6 +172,9 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	email := session.Values["email"]
 
 	// Bypass unauthenticated route regex
+	log.Printf("Regex match string: %v", pd.UnauthenticatedRoutesRegex)
+	log.Printf("Url path: %s", r.URL.Path)
+	log.Printf("Bypass due to regex match: %v", pd.UnauthenticatedRoutesRegex.MatchString(r.URL.Path))
 	if !pd.UnauthenticatedRoutesRegex.MatchString(r.URL.Path) {
 		if email == nil {
 			referer := fmt.Sprintf("%s%s", r.Host, r.URL.Path)
