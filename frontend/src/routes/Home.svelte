@@ -67,8 +67,9 @@ async function saveConfig() {
             body: JSON.stringify(config)
         })
 
-        console.log(res.text())
-        configSnackbarText = "Pylon: " + res.text()
+        let response = await res.text()
+        console.log(response)
+        configSnackbarText = "Pylon: " + response
         configSnackbar.open()
     }
 }
