@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0 --port 3001",
     "build": "vite build",
     "preview": "vite preview",
-    "prepare": "npm --prefix /pylon run smui-theme-light && npm --prefix /pylon run smui-theme-dark",
+    "prepare": "npm run smui-theme-light && npm run smui-theme-dark",
     "smui-theme-light": "smui-theme compile smui.css -i src/theme",
     "smui-theme-dark": "smui-theme compile smui-dark.css -i src/theme/dark"
   },
