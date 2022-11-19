@@ -11,6 +11,7 @@ import LayoutGrid, { Cell as GridCell } from '@smui/layout-grid'
 let config
 let proxyDetail
 let configSnackbar: Snackbar;
+let configSnackbarText
 
 onMount(async () => {
     // Dev
@@ -57,6 +58,7 @@ function addProxy(proxy) {
 async function saveConfig() {
     // Dev
     if (import.meta.env.DEV) {
+        configSnackbarText = "DEV MODE MOCK SAVE"
         configSnackbar.open()
     } else {
         //Prod
@@ -65,7 +67,8 @@ async function saveConfig() {
             body: JSON.stringify(config)
         })
 
-        console.log(res.json())
+        console.log(res.text())
+        configSnackbarText = "Pylon: " + res.text()
         configSnackbar.open()
     }
 }
@@ -105,7 +108,7 @@ async function saveConfig() {
                         <Icon class="material-icons">save</Icon>
                     </Button>
                     <Snackbar bind:this={configSnackbar}>
-                        <SnackLabel>Saved Configuration</SnackLabel>
+                        <SnackLabel>{configSnackbarText}</SnackLabel>
                         <Actions>
                         <IconButton class="material-icons" title="Dismiss">close</IconButton>
                         </Actions>

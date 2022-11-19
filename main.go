@@ -172,10 +172,7 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	email := session.Values["email"]
 
 	// Bypass unauthenticated route regex
-	log.Printf("Regex match string: %v", pd.UnauthenticatedRoutesRegex)
-	log.Printf("Url path: %s", r.URL.Path)
-	log.Printf("Bypass due to regex match: %v", pd.UnauthenticatedRoutesRegex.MatchString(r.URL.Path))
-	if len(pd.UnauthenticatedRoutesRegex.String()) < 1 || !pd.UnauthenticatedRoutesRegex.MatchString(r.URL.Path) {
+	if !pd.isUnauthenticatedRoute(r.URL.Path) {
 		if email == nil {
 			referer := fmt.Sprintf("%s%s", r.Host, r.URL.Path)
 			fmt.Println(referer)
@@ -372,6 +369,15 @@ func (pd *ProxyDetails) userInAllowedList(email string) bool {
 		}
 	}
 	return false
+}
+
+func (pd *ProxyDetails) isUnauthenticatedRoute(path string) bool {
+	if len(pd.UnauthenticatedRoutesRegex.String()) > 0 && pd.UnauthenticatedRoutesRegex.MatchString(path) {
+		log.Printf("Bypass Pylon due to regex match: %v for path: %s for internal host: %s", pd.UnauthenticatedRoutesRegex.String(), path, pd.Internal)
+		return true
+	} else {
+		return false
+	}
 }
 
 func emailFromIdToken(idToken string) (string, error) {
