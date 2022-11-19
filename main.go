@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -25,17 +26,19 @@ import (
 var cfg = loadConfig()
 
 type ProxyDetails struct {
-	Internal     string
-	AllowedUsers []string `json:"allowed_users"`
+	Internal                   string
+	AllowedUsers               []string `json:"allowed_users"`
+	UnauthenticatedRoutesRegex *regexp.Regexp
 }
 
 type Config struct {
 	TLDN         string   `json:"tldn"`
 	AllowedUsers []string `json:"allowed_users"`
 	Proxies      []struct {
-		Internal     string   `json:"internal"`
-		External     string   `json:"external"`
-		AllowedUsers []string `json:"allowed_users"`
+		Internal              string   `json:"internal"`
+		External              string   `json:"external"`
+		AllowedUsers          []string `json:"allowed_users"`
+		UnauthenticatedRoutes []string `json:"unauthenticated_routes"`
 	} `json:"proxies"`
 	SessionKey   string        `json:"session_key"`
 	CookieExpire time.Duration `json:"cookie_expire"`
@@ -82,7 +85,8 @@ func (ps *ProxyServer) startServer() {
 	for _, p := range cfg.Proxies {
 		fmt.Println(p.External)
 		domains = append(domains, p.External)
-		internal := &ProxyDetails{Internal: p.Internal, AllowedUsers: p.AllowedUsers}
+		unauthenticatedRegex := regexp.MustCompile(strings.Join(p.UnauthenticatedRoutes[:], "|"))
+		internal := &ProxyDetails{Internal: p.Internal, AllowedUsers: p.AllowedUsers, UnauthenticatedRoutesRegex: unauthenticatedRegex}
 		proxy_mux.HandleFunc(p.External+"/", internal.proxy)
 	}
 
@@ -166,18 +170,22 @@ func (ps *ProxyServer) restartServer() {
 func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	session, _ := store.Get(r, "pylon")
 	email := session.Values["email"]
-	if email == nil {
-		referer := fmt.Sprintf("%s%s", r.Host, r.URL.Path)
-		fmt.Println(referer)
-		http.Redirect(w, r, fmt.Sprintf("%s?referer=%s", cfg.OAuth.Auth_URL, referer), http.StatusFound)
-		return
-	}
-	if !pd.userInAllowedList(email.(string)) {
-		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, `<h3>User %s is unauthorized to access this resource.</h3>
-                        <button onclick="window.location.href = '%s';">Login</button>`, email, cfg.OAuth.Auth_URL)
-		log.Printf("user %s not allowed", email)
-		return
+
+	// Bypass unauthenticated route regex
+	if !pd.UnauthenticatedRoutesRegex.MatchString(r.URL.Path) {
+		if email == nil {
+			referer := fmt.Sprintf("%s%s", r.Host, r.URL.Path)
+			fmt.Println(referer)
+			http.Redirect(w, r, fmt.Sprintf("%s?referer=%s", cfg.OAuth.Auth_URL, referer), http.StatusFound)
+			return
+		}
+		if !pd.userInAllowedList(email.(string)) {
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<h3>User %s is unauthorized to access this resource.</h3>
+							<button onclick="window.location.href = '%s';">Login</button>`, email, cfg.OAuth.Auth_URL)
+			log.Printf("user %s not allowed", email)
+			return
+		}
 	}
 
 	proxy_url := pd.Internal
@@ -351,7 +359,7 @@ func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "https://"+referer, 302)
+	http.Redirect(w, r, "https://"+referer, http.StatusFound)
 }
 
 func (pd *ProxyDetails) userInAllowedList(email string) bool {
