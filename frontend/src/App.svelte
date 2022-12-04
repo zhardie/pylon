@@ -1,6 +1,7 @@
 <script>
 import Router from 'svelte-spa-router'
 import Navigation from './lib/Navigation.svelte'
+import Dashboard from './routes/Dashboard.svelte';
 import Home from './routes/Home.svelte'
 import NotFound from './routes/NotFound.svelte'
 import Test from './routes/Test.svelte';
@@ -8,6 +9,7 @@ import Test from './routes/Test.svelte';
 const routes = {
     '/': Home,
     '/test': Test,
+    '/dashboard': Dashboard,
     '*': NotFound,
 }
 </script>
