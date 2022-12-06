@@ -184,7 +184,7 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	isDashboardRedirect := false
 	isDashboardRedirectParam := r.URL.Query().Get("isDashboardRedirect")
 	log.Printf("isDashboardRedirect: %s", isDashboardRedirectParam)
-	if isDashboardRedirectParam == "true" {
+	if isDashboardRedirectParam == "true/" { // Dumb hack because we can't see SPA hash routes
 		isDashboardRedirect = true
 	}
 
