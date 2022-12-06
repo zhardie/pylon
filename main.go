@@ -358,6 +358,7 @@ func getSubdomain(r *http.Request) string {
 	host = strings.TrimSpace(host)
 	//Figure out if a subdomain exists in the host given.
 	hostParts := strings.Split(host, ".")
+	fmt.Println("host parts",hostParts)
 
 	lengthOfHostParts := len(hostParts)
 

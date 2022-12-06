@@ -8,15 +8,19 @@ let apps: Array<string>;
 // apps = JSON.parse(new URL(window.location.toString().replace('/#', '/')).searchParams.get('apps'))
 
 onMount(async () => {
-  const res = await fetch(`/8ef55d02bd174c29177d5618bfb3a2f3/allowedApps`)
-  let res_json = await res.json()
-  console.log(res_json)
-  apps = res_json['apps']
+  const res = fetch(`/8ef55d02bd174c29177d5618bfb3a2f3/allowedApps`).then(async res => {
+    console.log(res)
+    let res_json = await res.json()
+    apps = res_json['apps']
+  }).catch(error => {
+    console.log(error)
+  })
 })
 
 </script>
 
 <div>
+{#if apps}
 <LayoutGrid>
   {#each apps as app}
   <GridCell class="app-card">
@@ -26,6 +30,7 @@ onMount(async () => {
   </GridCell>
   {/each}
 </LayoutGrid>
+{/if}
 </div>
 
 <style>
