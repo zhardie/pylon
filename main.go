@@ -175,6 +175,17 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	session, _ := store.Get(r, "pylon")
 	email := session.Values["email"]
 
+	// Dashboard checkers
+	isDashboard, err := regexp.MatchString("^dashboard", getSubdomain(r))
+	if err != nil {
+		log.Printf("unable to parse dashboard subdomain: %v", r.URL.Host)
+	}
+	if isDashboard {
+		log.Print("Dashboard request; rendering dashboard")
+		http.Redirect(w, r, fmt.Sprintf("/#/dashboard"), http.StatusFound)
+		return
+	}
+
 	isPylonApi, err := regexp.MatchString("^/8ef55d02bd174c29177d5618bfb3a2f3/*", r.URL.Path)
 	if err != nil {
 		log.Printf("unable to parse isPylonApi path: %v", err)
@@ -339,6 +350,37 @@ func sliceContains(s []string, str string) bool {
 	}
 
 	return false
+}
+
+func getSubdomain(r *http.Request) string {
+	//The Host that the user queried.
+	host := r.URL.Host
+	host = strings.TrimSpace(host)
+	//Figure out if a subdomain exists in the host given.
+	hostParts := strings.Split(host, ".")
+
+	lengthOfHostParts := len(hostParts)
+
+	// scenarios
+	// A. site.com  -> length : 2
+	// B. www.site.com -> length : 3
+	// C. www.hello.site.com -> length : 4
+
+	if lengthOfHostParts == 4 {
+			return strings.Join([]string{hostParts[1]},"") // scenario C
+	}
+	
+	if lengthOfHostParts == 3 { // scenario B with a check
+			subdomain := strings.Join([]string{hostParts[0]},"")
+			
+			if subdomain == "www" {
+					return ""
+			} else {
+					return subdomain
+			}
+	}
+
+	return ""
 }
 
 func loadConfig() (cfg Config) {
