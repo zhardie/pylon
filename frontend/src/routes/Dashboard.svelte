@@ -1,15 +1,9 @@
 <script lang="ts">
-// import { querystring } from 'svelte-spa-router'
+
 import LayoutGrid, { Cell as GridCell } from '@smui/layout-grid'
 import Card, { Content as CardContent } from '@smui/card'
 
-type app = {
-  location: string;
-};
-
-let apps: Array<app>;
-
-let foo = new URL(window.location.toString().replace('/#', '/'))
+let apps: Array<string>;
 
 apps = JSON.parse(new URL(window.location.toString().replace('/#', '/')).searchParams.get('apps'))
 
@@ -19,8 +13,8 @@ apps = JSON.parse(new URL(window.location.toString().replace('/#', '/')).searchP
 <LayoutGrid>
   {#each apps as app}
   <GridCell class="app-card">
-    <Card on:click={() => window.location.href = app.location}>
-      <CardContent>{app.location}</CardContent>
+    <Card on:click={() => window.location.href = app}>
+      <CardContent>{app}</CardContent>
     </Card>
   </GridCell>
   {/each}

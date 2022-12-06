@@ -56,6 +56,10 @@ type ProxyServer struct {
 	wg              *sync.WaitGroup
 }
 
+type AppListResponse struct {
+	Apps []string `json:"apps"`
+}
+
 var store = sessions.NewCookieStore([]byte(cfg.SessionKey))
 var server = &ProxyServer{wg: &sync.WaitGroup{}}
 
@@ -67,6 +71,7 @@ func main() {
 
 	frontend.Handle("/", fs)
 	frontend.HandleFunc("/config", ConfigHandler)
+	frontend.HandleFunc("/listapps", AppListHandler)
 
 	// OAuth2 Handlers
 	http.HandleFunc(strings.Split(cfg.OAuth.Auth_URL, "://")[1], oauth2authhandler)
@@ -125,7 +130,7 @@ func (ps *ProxyServer) startServer() {
 	}
 
 	go func() {
-		// serve HTTP, which will redirect automatically to HTTPS
+		// serve HTTP, which will redirect to HTTPS
 		defer ps.wg.Done()
 		err := ps.redirect_server.ListenAndServe()
 		if err != nil {
@@ -170,6 +175,16 @@ func (ps *ProxyServer) restartServer() {
 func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	session, _ := store.Get(r, "pylon")
 	email := session.Values["email"]
+
+	isPylonApi, err := regexp.MatchString("^/8ef55d02bd174c29177d5618bfb3a2f3/*", r.URL.Path)
+	if err != nil {
+		log.Printf("unable to parse isPylonApi path: %v", err)
+	}
+	if isPylonApi {
+		log.Printf("matches pylon api path; handling pylon request")
+		w.Write([]byte("pylon api response"))
+		return
+	}
 
 	// Bypass unauthenticated route regex
 	if !pd.isUnauthenticatedRoute(r.URL.Path) {
@@ -264,6 +279,47 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func AppListHandler(w http.ResponseWriter, r *http.Request) {
+	enableCORS(&w, r)
+
+	if r.Method == "OPTIONS" {
+		return
+	}
+
+	if r.Method == "GET" {
+		user := strings.TrimPrefix(r.URL.Path, "/user/")
+
+		f, err := ioutil.ReadFile("/config/config.json")
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		var conf Config
+		err = json.Unmarshal([]byte(f), &conf)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		allowedApps := new(AppListResponse)
+
+		for _, proxy := range(conf.Proxies) {
+			if sliceContains(proxy.AllowedUsers, user) {
+				allowedApps.Apps = append(allowedApps.Apps, proxy.External)
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		jsonResponse, err := json.Marshal(allowedApps)
+		if err != nil {
+				log.Printf("could not marshal AppListHandler response: %v", err)
+		}
+
+		w.Write(jsonResponse)
+	}
+
+	return
+}
+
 // cacheDir makes a consistent cache directory inside /tmp. Returns "" on error.
 // func cacheDir() (dir string) {
 // 	if u, _ := user.Current(); u != nil {
@@ -275,6 +331,16 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 // 	return ""
 // }
 
+func sliceContains(s []string, str string) bool {
+	for _, v := range s {
+		if v == str {
+			return true
+		}
+	}
+
+	return false
+}
+
 func loadConfig() (cfg Config) {
 	f, err := ioutil.ReadFile("/config/config.json")
 	if err != nil {
@@ -282,7 +348,10 @@ func loadConfig() (cfg Config) {
 	}
 
 	var conf Config
-	_ = json.Unmarshal([]byte(f), &conf)
+	err = json.Unmarshal([]byte(f), &conf)
+	if err != nil {
+		log.Printf("Error unmarshalling config: %v", err)
+	}
 
 	return conf
 }
