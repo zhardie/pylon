@@ -189,7 +189,7 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 
 	if isDashboard && !isDashboardRedirect {
 		log.Print("Dashboard request; rendering dashboard")
-		http.Redirect(w, r, "/#/dashboard", http.StatusFound)
+		http.Redirect(w, r, "?isDashboardRedirect=true/#/dashboard", http.StatusFound)
 		return
 	}
 
