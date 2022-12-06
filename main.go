@@ -180,7 +180,7 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("unable to parse dashboard subdomain: %v", r.URL.Host)
 	}
-	isDashboardPath, err := regexp.MatchString("^/#/dashboard*", r.URL.Path)
+	isDashboardPath, err := regexp.MatchString("^/dashboard*", r.URL.Fragment)
 	if err != nil {
 		log.Printf("unable to parse dashboard path: %v", r.URL.Path)
 	}
@@ -317,7 +317,7 @@ func AppListHandler(w http.ResponseWriter, r *http.Request, user string) {
 
 		allowedApps := new(AppListResponse)
 
-		for _, proxy := range(conf.Proxies) {
+		for _, proxy := range conf.Proxies {
 			if sliceContains(proxy.AllowedUsers, user) {
 				allowedApps.Apps = append(allowedApps.Apps, proxy.External)
 			}
@@ -326,7 +326,7 @@ func AppListHandler(w http.ResponseWriter, r *http.Request, user string) {
 		w.Header().Set("Content-Type", "application/json")
 		jsonResponse, err := json.Marshal(allowedApps)
 		if err != nil {
-				log.Printf("could not marshal AppListHandler response: %v", err)
+			log.Printf("could not marshal AppListHandler response: %v", err)
 		}
 
 		w.Write(jsonResponse)
@@ -362,7 +362,7 @@ func getSubdomain(r *http.Request) string {
 	host = strings.TrimSpace(host)
 	//Figure out if a subdomain exists in the host given.
 	hostParts := strings.Split(host, ".")
-	fmt.Println("host parts",hostParts)
+	fmt.Println("host parts", hostParts)
 
 	lengthOfHostParts := len(hostParts)
 
@@ -372,17 +372,17 @@ func getSubdomain(r *http.Request) string {
 	// C. www.hello.site.com -> length : 4
 
 	if lengthOfHostParts == 4 {
-			return strings.Join([]string{hostParts[1]},"") // scenario C
+		return strings.Join([]string{hostParts[1]}, "") // scenario C
 	}
-	
+
 	if lengthOfHostParts == 3 { // scenario B with a check
-			subdomain := strings.Join([]string{hostParts[0]},"")
-			
-			if subdomain == "www" {
-					return ""
-			} else {
-					return subdomain
-			}
+		subdomain := strings.Join([]string{hostParts[0]}, "")
+
+		if subdomain == "www" {
+			return ""
+		} else {
+			return subdomain
+		}
 	}
 
 	return ""
