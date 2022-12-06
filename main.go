@@ -180,7 +180,11 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("unable to parse dashboard subdomain: %v", r.URL.Host)
 	}
-	if isDashboard {
+	isDashboardPath, err := regexp.MatchString("^/#/dashboard*", r.URL.Path)
+	if err != nil {
+		log.Printf("unable to parse dashboard path: %v", r.URL.Path)
+	}
+	if isDashboard && !isDashboardPath {
 		log.Print("Dashboard request; rendering dashboard")
 		http.Redirect(w, r, fmt.Sprintf("/#/dashboard"), http.StatusFound)
 		return
