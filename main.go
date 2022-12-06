@@ -71,7 +71,6 @@ func main() {
 
 	frontend.Handle("/", fs)
 	frontend.HandleFunc("/config", ConfigHandler)
-	frontend.HandleFunc("/listapps", AppListHandler)
 
 	// OAuth2 Handlers
 	http.HandleFunc(strings.Split(cfg.OAuth.Auth_URL, "://")[1], oauth2authhandler)
@@ -182,7 +181,10 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if isPylonApi {
 		log.Printf("matches pylon api path; handling pylon request")
-		w.Write([]byte("pylon api response"))
+		resource := strings.TrimPrefix(r.URL.Path, "/8ef55d02bd174c29177d5618bfb3a2f3/")
+		if resource == "allowedApps" {
+			AppListHandler(w, r, email.(string))
+		}
 		return
 	}
 
@@ -279,7 +281,7 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func AppListHandler(w http.ResponseWriter, r *http.Request) {
+func AppListHandler(w http.ResponseWriter, r *http.Request, user string) {
 	enableCORS(&w, r)
 
 	if r.Method == "OPTIONS" {
@@ -287,8 +289,6 @@ func AppListHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "GET" {
-		user := strings.TrimPrefix(r.URL.Path, "/user/")
-
 		f, err := ioutil.ReadFile("/config/config.json")
 		if err != nil {
 			log.Fatal(err)
