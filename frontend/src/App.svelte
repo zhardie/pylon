@@ -1,5 +1,5 @@
 <script>
-import Router from 'svelte-spa-router'
+import Router, { push } from 'svelte-spa-router'
 import Navigation from './lib/Navigation.svelte'
 import Dashboard from './routes/Dashboard.svelte';
 import Home from './routes/Home.svelte'
@@ -12,6 +12,12 @@ const routes = {
     '/dashboard': Dashboard,
     '*': NotFound,
 }
+
+let isDashboardRedirect = JSON.parse(new URL(window.location.toString().replace('/#', '/')).searchParams.get('isDashboardRedirect'))
+console.log(isDashboardRedirect) // TODO: remove debug
+// if (isDashboardRedirect) {
+//   push('/dashboard')
+// }
 </script>
 
 <!-- <link
