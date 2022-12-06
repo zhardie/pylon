@@ -354,7 +354,7 @@ func sliceContains(s []string, str string) bool {
 
 func getSubdomain(r *http.Request) string {
 	//The Host that the user queried.
-	host := r.URL.Host
+	host := r.Host
 	host = strings.TrimSpace(host)
 	//Figure out if a subdomain exists in the host given.
 	hostParts := strings.Split(host, ".")
