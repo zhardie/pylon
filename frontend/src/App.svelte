@@ -13,11 +13,12 @@ const routes = {
     '*': NotFound,
 }
 
-let isDashboardRedirect = JSON.parse(new URL(window.location.toString().replace('/#', '/')).searchParams.get('isDashboardRedirect'))
+let isDashboardRedirect = new URL(window.location.toString()).searchParams.get('isDashboardRedirect')
 console.log(isDashboardRedirect) // TODO: remove debug
-// if (isDashboardRedirect) {
-//   push('/dashboard')
-// }
+console.log('foo')
+if (isDashboardRedirect) {
+  push('/dashboard')
+}
 </script>
 
 <!-- <link

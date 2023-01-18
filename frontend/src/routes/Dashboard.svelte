@@ -5,6 +5,7 @@ import Card, { Content as CardContent } from '@smui/card'
 
 let apps: Array<string>;
 
+  console.log('hi')
 // apps = JSON.parse(new URL(window.location.toString().replace('/#', '/')).searchParams.get('apps'))
 
 onMount(async () => {
