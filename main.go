@@ -237,9 +237,7 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Forwarded-Host", r.Host)
 	_, ok := r.Header["X-Forwarded-For"]
 	if !ok {
-		forwardedFor := fmt.Sprintf("%s:%s", remoteAddr, r.RemoteAddr[strings.Index(r.RemoteAddr, ":")+1:])
-		fmt.Printf("forwardedFor: %s", forwardedFor)
-		r.Header.Set("X-Forwarded-For", forwardedFor)
+		r.Header.Set("X-Forwarded-For", remoteAddr)
 	}
 	r.Host = url.Host
 
