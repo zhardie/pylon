@@ -236,6 +236,9 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Forwarded-Proto", r.URL.Scheme)
 	if r.TLS != nil {
 		r.Header.Set("X-Forwarded-Ssl", "on")
+		r.Header.Set("X-Forwarded-Proto", "https")
+	} else {
+		r.Header.Set("X-Forwarded-Proto", "http")
 	}
 
 	r.Header.Set("X-Forwarded-Port", url.Port())
