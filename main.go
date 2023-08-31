@@ -232,13 +232,19 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	proxy.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
+	if _, ok := r.Header["X-Forwarded-Proto"]; !ok {
+	    r.Header.Set("X-Forwarded-Proto", r.URL.Scheme)
+	}
+	if _, ok := r.Header["X-Forwarded-Port"]; !ok {
+	    r.Header.Set("X-Forwarded-Port", url.Port())
+	}
 	r.URL.Host = url.Host
 	r.URL.Scheme = url.Scheme
 	r.Header.Set("X-Forwarded-Host", r.Host)
-	_, ok := r.Header["X-Forwarded-For"]
-	if !ok {
-		r.Header.Set("X-Forwarded-For", remoteAddr)
+	if _, ok := r.Header["X-Forwarded-For"]; !ok {
+	    r.Header.Set("X-Forwarded-For", remoteAddr)
 	}
+	
 	r.Host = url.Host
 
 	proxy.ServeHTTP(w, r)
