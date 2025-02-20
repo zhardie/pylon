@@ -111,9 +111,9 @@ func (ps *ProxyServer) startServer() {
 
 	// create the TLS proxy server
 	ps.server = &http.Server{
-		ReadTimeout:  60 * time.Second,
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:  120 * time.Second,
+		WriteTimeout: 240 * time.Second,
+		IdleTimeout:  240 * time.Second,
 		Addr:         ":https",
 		Handler:      proxy_mux,
 		TLSConfig:    certManager.TLSConfig(),
