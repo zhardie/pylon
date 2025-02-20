@@ -188,6 +188,13 @@ func (ps *ProxyServer) restartServer() {
 }
 
 func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
+	// Handle OPTIONS preflight first
+	if r.Method == "OPTIONS" {
+		enableCORS(&w, r)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	session, _ := store.Get(r, "pylon")
 	email := session.Values["email"]
 
