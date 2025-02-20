@@ -81,6 +81,22 @@ func main() {
 	log.Fatal(http.ListenAndServe(":3001", frontend))
 }
 
+// Helper function to detect WebSocket requests
+func isWebSocketRequest(r *http.Request) bool {
+    containsHeader := func(name, value string) bool {
+        h := r.Header[name]
+        for _, v := range h {
+            if strings.Contains(strings.ToLower(v), value) {
+                return true
+            }
+        }
+        return false
+    }
+    
+    return containsHeader("Connection", "upgrade") &&
+        containsHeader("Upgrade", "websocket")
+}
+
 func (ps *ProxyServer) startServer() {
 	proxy_mux := http.NewServeMux()
 
@@ -207,6 +223,30 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+    // Handle websocket upgrades
+    if isWebSocketRequest(r) {
+        log.Printf("Handling WebSocket request to %s", r.URL.Path)
+        director := func(req *http.Request) {
+            req.URL.Scheme = url.Scheme
+            req.URL.Host = url.Host
+            req.Host = url.Host
+            
+            // Preserve any existing headers
+            if origin := r.Header.Get("Origin"); origin != "" {
+                req.Header.Set("Origin", origin)
+            }
+        }
+        
+        proxy := &httputil.ReverseProxy{
+            Director: director,
+            Transport: &http.Transport{
+                TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+            },
+        }
+        proxy.ServeHTTP(w, r)
+        return
+    }
+	
 	// Bypass unauthenticated route regex
 	if !pd.isUnauthenticatedRoute(r.URL.Path) {
 		if email == nil {
