@@ -223,33 +223,6 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle websocket upgrades
-	proxy_url := pd.Internal
-	target_url, _ := url.Parse(proxy_url)
-
-	if isWebSocketRequest(r) {
-		log.Printf("Handling WebSocket request to %s", r.URL.Path)
-		director := func(req *http.Request) {
-			req.URL.Scheme = target_url.Scheme
-			req.URL.Host = target_url.Host
-			req.Host = target_url.Host
-
-			// Preserve any existing headers
-			if origin := r.Header.Get("Origin"); origin != "" {
-				req.Header.Set("Origin", origin)
-			}
-		}
-
-		proxy := &httputil.ReverseProxy{
-			Director: director,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-		proxy.ServeHTTP(w, r)
-		return
-	}
-
 	// Bypass unauthenticated route regex
 	if !pd.isUnauthenticatedRoute(r.URL.Path) {
 		if email == nil {
@@ -271,6 +244,31 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	url, _ := url.Parse(proxy_url)
 	remoteAddr := strings.Split(r.RemoteAddr, ":")[0]
 	r.RemoteAddr = ""
+
+	// Handle websocket upgrades
+	if isWebSocketRequest(r) {
+		log.Printf("Handling WebSocket request to %s", r.URL.Path)
+		director := func(req *http.Request) {
+			req.URL.Scheme = url.Scheme
+			req.URL.Host = url.Host
+			req.Host = url.Host
+
+			// Preserve any existing headers
+			if origin := r.Header.Get("Origin"); origin != "" {
+				req.Header.Set("Origin", origin)
+			}
+		}
+
+		proxy := &httputil.ReverseProxy{
+			Director: director,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+		proxy.ServeHTTP(w, r)
+		return
+	}
+
 	proxy := httputil.NewSingleHostReverseProxy(url)
 	proxy.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
