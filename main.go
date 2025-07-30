@@ -74,22 +74,17 @@ func main() {
 	frontend.Handle("/", fs)
 	frontend.HandleFunc("/config", ConfigHandler)
 
-	// OAuth2 Handlers
-	authUrlHost := cfg.OAuth.Auth_URL
-	if u, err := url.Parse(cfg.OAuth.Auth_URL); err == nil {
-		authUrlHost = u.Host
-	}
-	redirectUrlHost := cfg.OAuth.Redirect_URL
-	if u, err := url.Parse(cfg.OAuth.Redirect_URL); err == nil {
-		redirectUrlHost = u.Host
-	}
-
-	http.HandleFunc(authUrlHost, oauth2authhandler)
-	http.HandleFunc(redirectUrlHost, oauth2callbackhandler)
+	go func() { // Run frontend server in a goroutine
+		log.Printf("Starting frontend server on :3001")
+		err := http.ListenAndServe(":3001", frontend)
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Frontend server failed: %v", err)
+		}
+	}()
 
 	server.startServer()
 
-	log.Fatal(http.ListenAndServe(":3001", frontend))
+	select {}
 }
 
 // Helper function to detect WebSocket requests
