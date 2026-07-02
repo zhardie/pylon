@@ -251,7 +251,7 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Forwarded-Port", url.Port())
 	r.Header.Set("X-Forwarded-For", remoteAddr)
 
-	r.Host = url.Host
+	//r.Host = url.Host
 
 	proxy.ServeHTTP(w, r)
 }
