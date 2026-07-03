@@ -2,6 +2,8 @@
     "tldn": "yourdomain.com",
     "allowed_users": [
     ],
+    "admin_password_hash": "",
+    "insecure_skip_verify": true,
     "proxies": [
     ],
     "session_key": "put_some_random_garbage_here",
@@ -13,3 +15,4 @@
         "redirect_url": "https://yourdomain.com/pylon/oauth2callback"
     }
 }
+
