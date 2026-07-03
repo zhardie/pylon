@@ -2,16 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,22 +22,24 @@ import (
 
 	"github.com/gorilla/sessions"
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
-var cfg = loadConfig()
-
 type ProxyDetails struct {
 	Internal                   string
-	AllowedUsers               []string `json:"allowed_users"`
+	AllowedUsers               []string               `json:"allowed_users"`
 	UnauthenticatedRoutesRegex *regexp.Regexp
+	ReverseProxy               *httputil.ReverseProxy
 }
 
 type Config struct {
-	TLDN         string   `json:"tldn"`
-	AllowedUsers []string `json:"allowed_users"`
-	Proxies      []struct {
+	TLDN               string        `json:"tldn"`
+	AllowedUsers       []string      `json:"allowed_users"`
+	AdminPasswordHash  string        `json:"admin_password_hash"`
+	InsecureSkipVerify bool          `json:"insecure_skip_verify"`
+	Proxies            []struct {
 		Internal              string   `json:"internal"`
 		External              string   `json:"external"`
 		AllowedUsers          []string `json:"allowed_users"`
@@ -60,56 +65,194 @@ type AppListResponse struct {
 	Apps []string `json:"apps"`
 }
 
-var store = sessions.NewCookieStore([]byte(cfg.SessionKey))
-var server = &ProxyServer{wg: &sync.WaitGroup{}}
+var (
+	cfgMu     sync.RWMutex
+	cfg       Config
+	store     *sessions.CookieStore
+	proxiesMu sync.RWMutex
+	proxies   map[string]*ProxyDetails
+	server    = &ProxyServer{wg: &sync.WaitGroup{}}
+)
 
 func main() {
-	// Frontend handler and api endpoint
+	// CLI Password Hashing Helper
+	hashPass := flag.String("hash", "", "Generate a bcrypt hash of the specified password and exit")
+	flag.Parse()
+
+	if *hashPass != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(*hashPass), bcrypt.DefaultCost)
+		if err != nil {
+			log.Fatalf("Failed to generate bcrypt hash: %v", err)
+		}
+		fmt.Println(string(hash))
+		return
+	}
+
+	// Load Initial Config
+	if err := loadConfig(); err != nil {
+		log.Fatalf("Failed to load initial config: %v", err)
+	}
+
+	// Frontend handler and api endpoint (port :3001)
 	frontend := http.NewServeMux()
-
 	fs := http.FileServer(http.Dir("frontend"))
-
 	frontend.Handle("/", fs)
 	frontend.HandleFunc("/config", ConfigHandler)
 
-	// OAuth2 Handlers
-	http.HandleFunc(strings.Split(cfg.OAuth.Auth_URL, "://")[1], oauth2authhandler)
-	http.HandleFunc(strings.Split(cfg.OAuth.Redirect_URL, "://")[1], oauth2callbackhandler)
-
+	// Start Proxy Server (ports :http and :https)
 	server.startServer()
 
-	log.Fatal(http.ListenAndServe(":3001", frontend))
+	// Serve Frontend with Basic Auth Middleware
+	log.Printf("Serving admin panel on port :3001...")
+	log.Fatal(http.ListenAndServe(":3001", basicAuthMiddleware(frontend)))
+}
+
+func getConfigPath() string {
+	configPath := "/config/config.json"
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		configPath = "config.json"
+	}
+	return configPath
+}
+
+func loadConfig() error {
+	configPath := getConfigPath()
+	f, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+
+	var conf Config
+	err = json.Unmarshal(f, &conf)
+	if err != nil {
+		return err
+	}
+
+	// Build proxies lookup map
+	newProxies := make(map[string]*ProxyDetails)
+	for _, p := range conf.Proxies {
+		unauthenticatedRegex, err := regexp.Compile(strings.Join(p.UnauthenticatedRoutes, "|"))
+		if err != nil {
+			return fmt.Errorf("invalid unauthenticated routes regex: %v", err)
+		}
+
+		u, err := url.Parse(p.Internal)
+		if err != nil {
+			return fmt.Errorf("invalid internal URL %q: %v", p.Internal, err)
+		}
+
+		// Configure and reuse reverse proxy and transport
+		rp := httputil.NewSingleHostReverseProxy(u)
+		rp.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: conf.InsecureSkipVerify,
+			},
+		}
+
+		newProxies[p.External] = &ProxyDetails{
+			Internal:                   p.Internal,
+			AllowedUsers:               p.AllowedUsers,
+			UnauthenticatedRoutesRegex: unauthenticatedRegex,
+			ReverseProxy:               rp,
+		}
+	}
+
+	cfgMu.Lock()
+	cfg = conf
+	store = sessions.NewCookieStore([]byte(conf.SessionKey))
+	cfgMu.Unlock()
+
+	proxiesMu.Lock()
+	proxies = newProxies
+	proxiesMu.Unlock()
+
+	return nil
+}
+
+func getSessionStore() *sessions.CookieStore {
+	cfgMu.RLock()
+	defer cfgMu.RUnlock()
+	return store
+}
+
+func isAllowedDomain(host string) bool {
+	cfgMu.RLock()
+	authURLStr := cfg.OAuth.Auth_URL
+	redirectURLStr := cfg.OAuth.Redirect_URL
+	cfgMu.RUnlock()
+
+	authURL, err := url.Parse(authURLStr)
+	if err == nil && authURL.Host == host {
+		return true
+	}
+	redirectURL, err := url.Parse(redirectURLStr)
+	if err == nil && redirectURL.Host == host {
+		return true
+	}
+
+	proxiesMu.RLock()
+	defer proxiesMu.RUnlock()
+	_, exists := proxies[host]
+	return exists
+}
+
+func lookupProxy(host string) (*ProxyDetails, bool) {
+	proxiesMu.RLock()
+	defer proxiesMu.RUnlock()
+	pd, found := proxies[host]
+	return pd, found
+}
+
+func basicAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Bypass CORS preflight requests
+		if r.Method == "OPTIONS" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		user, pass, ok := r.BasicAuth()
+
+		cfgMu.RLock()
+		hash := cfg.AdminPasswordHash
+		cfgMu.RUnlock()
+
+		if hash == "" {
+			log.Printf("Admin access blocked: admin_password_hash is empty in config.json")
+			w.Header().Set("WWW-Authenticate", `Basic realm="Pylon Admin Dashboard"`)
+			http.Error(w, "Unauthorized (Admin password hash not configured)", http.StatusUnauthorized)
+			return
+		}
+
+		if !ok || user != "admin" || bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Pylon Admin Dashboard"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (ps *ProxyServer) startServer() {
 	proxy_mux := http.NewServeMux()
 
-	var domains []string
+	// Catch-all main handler for dynamic proxy routing and OAuth endpoints
+	proxy_mux.HandleFunc("/", mainProxyHandler)
 
-	for _, p := range cfg.Proxies {
-		fmt.Println(p.External)
-		domains = append(domains, p.External)
-		unauthenticatedRegex := regexp.MustCompile(strings.Join(p.UnauthenticatedRoutes[:], "|"))
-		internal := &ProxyDetails{Internal: p.Internal, AllowedUsers: p.AllowedUsers, UnauthenticatedRoutesRegex: unauthenticatedRegex}
-		proxy_mux.HandleFunc(p.External+"/", internal.proxy)
-	}
-
-	auth_url, _ := url.Parse(cfg.OAuth.Auth_URL)
-	redirect_url, _ := url.Parse(cfg.OAuth.Redirect_URL)
-	domains = append(domains, auth_url.Host)
-	domains = append(domains, redirect_url.Host)
-
-	proxy_mux.HandleFunc(strings.Split(cfg.OAuth.Auth_URL, "://")[1], oauth2authhandler)
-	proxy_mux.HandleFunc(strings.Split(cfg.OAuth.Redirect_URL, "://")[1], oauth2callbackhandler)
-
-	// create the autocert.Manager with domains and path to the cache
+	// Create the autocert.Manager with dynamic HostPolicy
 	certManager := autocert.Manager{
-		Cache:      autocert.DirCache("/certs"),
-		Prompt:     autocert.AcceptTOS,
-		HostPolicy: autocert.HostWhitelist(domains...),
+		Cache:  autocert.DirCache("/certs"),
+		Prompt: autocert.AcceptTOS,
+		HostPolicy: func(ctx context.Context, host string) error {
+			if isAllowedDomain(host) {
+				return nil
+			}
+			return fmt.Errorf("acme/autocert: host %q not configured", host)
+		},
 	}
 
-	// create the TLS proxy server
+	// Create the TLS proxy server
 	ps.server = &http.Server{
 		ReadTimeout:  120 * time.Second,
 		WriteTimeout: 240 * time.Second,
@@ -128,70 +271,84 @@ func (ps *ProxyServer) startServer() {
 		Handler:      h,
 	}
 
-	go func() {
-		// serve HTTP, which will redirect to HTTPS
-		defer ps.wg.Done()
-		err := ps.redirect_server.ListenAndServe()
-		if err != nil {
-			if err == http.ErrServerClosed {
-				return
-			}
-			log.Print("Error starting redirect server")
-			log.Print(err)
-		}
-	}()
-
-	// serve HTTPS!
-	go func() {
-		defer ps.wg.Done()
-		err := ps.server.ListenAndServeTLS("", "")
-		if err != nil {
-			if err == http.ErrServerClosed {
-				return
-			}
-			log.Print("Error starting proxy server")
-			log.Print(err)
-		}
-	}()
-
-	fmt.Println("Serving...")
-}
-
-func (ps *ProxyServer) restartServer() {
 	ps.wg.Add(2)
 
-	fmt.Println("Attempting to shut down server")
-	ps.server.Shutdown(context.Background())
-	ps.redirect_server.Shutdown(context.Background())
-	log.Print("Waiting for servers to shut down")
-	ps.wg.Wait()
-	log.Print("Servers successfully shut down")
-	cfg = loadConfig()
+	go func() {
+		// Serve HTTP, which redirects to HTTPS
+		defer ps.wg.Done()
+		err := ps.redirect_server.ListenAndServe()
+		if err != nil && err != http.ErrServerClosed {
+			log.Print("Error starting redirect server:", err)
+		}
+	}()
 
-	server.startServer()
+	go func() {
+		// Serve HTTPS
+		defer ps.wg.Done()
+		err := ps.server.ListenAndServeTLS("", "")
+		if err != nil && err != http.ErrServerClosed {
+			log.Print("Error starting proxy server:", err)
+		}
+	}()
+
+	fmt.Println("Serving proxy routes...")
 }
 
-func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
-	// Handle OPTIONS preflight first
+func matchesOAuthURL(r *http.Request, oauthURLStr string) bool {
+	u, err := url.Parse(oauthURLStr)
+	if err != nil {
+		return false
+	}
+	return r.Host == u.Host && r.URL.Path == u.Path
+}
+
+func mainProxyHandler(w http.ResponseWriter, r *http.Request) {
+	// Handle CORS preflight options
 	if r.Method == "OPTIONS" {
 		enableCORS(&w, r)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	session, _ := store.Get(r, "pylon")
-	email := session.Values["email"]
+	cfgMu.RLock()
+	authURLStr := cfg.OAuth.Auth_URL
+	redirectURLStr := cfg.OAuth.Redirect_URL
+	cfgMu.RUnlock()
 
-	// Dashboard checkers
-	isDashboard, err := regexp.MatchString("^dashboard", getSubdomain(r))
-	if err != nil {
-		log.Printf("unable to parse dashboard subdomain: %v", r.URL.Host)
+	// 1. Check if OAuth Auth URL
+	if matchesOAuthURL(r, authURLStr) {
+		oauth2authhandler(w, r)
+		return
 	}
+
+	// 2. Check if OAuth Redirect URL
+	if matchesOAuthURL(r, redirectURLStr) {
+		oauth2callbackhandler(w, r)
+		return
+	}
+
+	// 3. Resolve Proxy Destination
+	pd, found := lookupProxy(r.Host)
+	if !found {
+		http.Error(w, "Proxy Host Not Found", http.StatusNotFound)
+		return
+	}
+
+	pd.proxy(w, r)
+}
+
+func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
+	sessionStore := getSessionStore()
+	session, _ := sessionStore.Get(r, "pylon")
+	emailVal := session.Values["email"]
+
+	// Dashboard Subdomain Handler
+	subdomain := getSubdomain(r)
+	isDashboard := strings.HasPrefix(subdomain, "dashboard")
 
 	isDashboardRedirect := false
 	isDashboardRedirectParam := r.URL.Query().Get("isDashboardRedirect")
-	log.Printf("isDashboardRedirect: %s", isDashboardRedirectParam)
-	if strings.HasPrefix(isDashboardRedirectParam, "true") { // Dumb hack because we can't see SPA hash routes
+	if strings.HasPrefix(isDashboardRedirectParam, "true") {
 		isDashboardRedirect = true
 	}
 
@@ -201,44 +358,48 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isPylonApi, err := regexp.MatchString("^/8ef55d02bd174c29177d5618bfb3a2f3/*", r.URL.Path)
-	if err != nil {
-		log.Printf("unable to parse isPylonApi path: %v", err)
-	}
+	// App API Handler
+	isPylonApi := strings.HasPrefix(r.URL.Path, "/8ef55d02bd174c29177d5618bfb3a2f3")
 	if isPylonApi {
 		log.Printf("matches pylon api path; handling pylon request")
 		resource := strings.TrimPrefix(r.URL.Path, "/8ef55d02bd174c29177d5618bfb3a2f3/")
 		if resource == "allowedApps" {
-			AppListHandler(w, r, email.(string))
+			if emailVal == nil {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			AppListHandler(w, r, emailVal.(string))
 		}
 		return
 	}
 
-	// Bypass unauthenticated route regex
+	// Authenticate and Authorize
 	if !pd.isUnauthenticatedRoute(r.URL.Path) {
-		if email == nil {
+		if emailVal == nil {
 			referer := fmt.Sprintf("%s%s", r.Host, r.URL.Path)
-			fmt.Println(referer)
-			http.Redirect(w, r, fmt.Sprintf("%s?referer=%s", cfg.OAuth.Auth_URL, referer), http.StatusFound)
+			cfgMu.RLock()
+			authURLStr := cfg.OAuth.Auth_URL
+			cfgMu.RUnlock()
+			http.Redirect(w, r, fmt.Sprintf("%s?referer=%s", authURLStr, referer), http.StatusFound)
 			return
 		}
-		if !pd.userInAllowedList(email.(string)) {
+
+		email := emailVal.(string)
+		if !pd.userInAllowedList(email) {
+			cfgMu.RLock()
+			authURLStr := cfg.OAuth.Auth_URL
+			cfgMu.RUnlock()
+
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprintf(w, `<h3>User %s is unauthorized to access this resource.</h3>
-							<button onclick="window.location.href = '%s';">Login</button>`, email, cfg.OAuth.Auth_URL)
-			log.Printf("user %s not allowed", email)
+							<button onclick="window.location.href = '%s';">Login</button>`, email, authURLStr)
+			log.Printf("user %s not allowed for target host: %s", email, r.Host)
 			return
 		}
 	}
 
-	proxy_url := pd.Internal
-	url, _ := url.Parse(proxy_url)
+	// Forward request via the pre-instantiated ReverseProxy
 	remoteAddr := strings.Split(r.RemoteAddr, ":")[0]
-
-	proxy := httputil.NewSingleHostReverseProxy(url)
-	proxy.Transport = &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
 
 	r.Header.Set("X-Forwarded-Host", r.Host)
 	if r.TLS != nil {
@@ -248,12 +409,11 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("X-Forwarded-Proto", "http")
 	}
 
-	r.Header.Set("X-Forwarded-Port", url.Port())
+	u, _ := url.Parse(pd.Internal)
+	r.Header.Set("X-Forwarded-Port", u.Port())
 	r.Header.Set("X-Forwarded-For", remoteAddr)
 
-	//r.Host = url.Host
-
-	proxy.ServeHTTP(w, r)
+	pd.ReverseProxy.ServeHTTP(w, r)
 }
 
 func enableCORS(w *http.ResponseWriter, r *http.Request) {
@@ -261,23 +421,28 @@ func enableCORS(w *http.ResponseWriter, r *http.Request) {
 	(*w).Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 	(*w).Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 	(*w).Header().Set("Access-Control-Allow-Credentials", "true")
-	(*w).WriteHeader(http.StatusOK)
 }
 
 func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	enableCORS(&w, r)
 
 	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	if r.Method == "GET" {
-		f, err := ioutil.ReadFile("/config/config.json")
+		cfgMu.RLock()
+		payload, err := json.MarshalIndent(cfg, "", "    ")
+		cfgMu.RUnlock()
 		if err != nil {
-			log.Fatal(err)
+			log.Printf("Error marshalling config: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
 		}
-
-		w.Write(f)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(payload)
+		return
 	}
 
 	if r.Method == "POST" {
@@ -285,30 +450,43 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 		var new_config Config
 		err := decoder.Decode(&new_config)
 		if err != nil {
-			log.Print("Error decoding config json")
-			w.Write([]byte("not okay"))
+			log.Print("Error decoding config json:", err)
+			http.Error(w, "Bad Request", http.StatusBadRequest)
 			return
 		}
+
+		cfgMu.RLock()
+		currentHash := cfg.AdminPasswordHash
+		cfgMu.RUnlock()
+
+		// Preserve admin password hash if not supplied in client payload
+		if new_config.AdminPasswordHash == "" {
+			new_config.AdminPasswordHash = currentHash
+		}
+
 		pretty, err := json.MarshalIndent(new_config, "", "    ")
 		if err != nil {
-			log.Print("Error decoding json config post data")
-			w.Write([]byte("not okay"))
-			return
-		}
-		if err != nil {
-			log.Print("Error decoding json config post data")
-			w.Write([]byte("not okay"))
+			log.Print("Error encoding configuration:", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
 
-		err = ioutil.WriteFile("/config/config.json", pretty, 0666)
+		configPath := getConfigPath()
+		err = os.WriteFile(configPath, pretty, 0600)
 		if err != nil {
-			log.Print("Error writing to config file")
-			w.Write([]byte("not okay"))
+			log.Print("Error writing to config file:", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
 
-		server.restartServer()
+		// Reload configuration dynamically in memory
+		if err := loadConfig(); err != nil {
+			log.Print("Failed to reload newly written config:", err)
+			http.Error(w, "Failed to apply config changes internally", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte("okay"))
 		return
 	}
@@ -318,24 +496,18 @@ func AppListHandler(w http.ResponseWriter, r *http.Request, user string) {
 	enableCORS(&w, r)
 
 	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	if r.Method == "GET" {
-		f, err := ioutil.ReadFile("/config/config.json")
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		var conf Config
-		err = json.Unmarshal([]byte(f), &conf)
-		if err != nil {
-			log.Fatal(err)
-		}
+		cfgMu.RLock()
+		proxiesList := cfg.Proxies
+		cfgMu.RUnlock()
 
 		allowedApps := new(AppListResponse)
 
-		for _, proxy := range conf.Proxies {
+		for _, proxy := range proxiesList {
 			if sliceContains(proxy.AllowedUsers, user) {
 				allowedApps.Apps = append(allowedApps.Apps, proxy.External)
 			}
@@ -345,24 +517,13 @@ func AppListHandler(w http.ResponseWriter, r *http.Request, user string) {
 		jsonResponse, err := json.Marshal(allowedApps)
 		if err != nil {
 			log.Printf("could not marshal AppListHandler response: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
 		}
 
 		w.Write(jsonResponse)
 	}
-
-	return
 }
-
-// cacheDir makes a consistent cache directory inside /tmp. Returns "" on error.
-// func cacheDir() (dir string) {
-// 	if u, _ := user.Current(); u != nil {
-// 		dir = filepath.Join(os.TempDir(), "cache-golang-autocert-"+u.Username)
-// 		if err := os.MkdirAll(dir, 0700); err == nil {
-// 			return dir
-// 		}
-// 	}
-// 	return ""
-// }
 
 func sliceContains(s []string, str string) bool {
 	for _, v := range s {
@@ -370,63 +531,72 @@ func sliceContains(s []string, str string) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
 func getSubdomain(r *http.Request) string {
-	//The Host that the user queried.
 	host := r.Host
 	host = strings.TrimSpace(host)
-	//Figure out if a subdomain exists in the host given.
 	hostParts := strings.Split(host, ".")
-	fmt.Println("host parts", hostParts)
 
 	lengthOfHostParts := len(hostParts)
 
-	// scenarios
-	// A. site.com  -> length : 2
-	// B. www.site.com -> length : 3
-	// C. www.hello.site.com -> length : 4
-
 	if lengthOfHostParts == 4 {
-		return strings.Join([]string{hostParts[1]}, "") // scenario C
+		return hostParts[1]
 	}
 
-	if lengthOfHostParts == 3 { // scenario B with a check
-		subdomain := strings.Join([]string{hostParts[0]}, "")
-
+	if lengthOfHostParts == 3 {
+		subdomain := hostParts[0]
 		if subdomain == "www" {
 			return ""
-		} else {
-			return subdomain
 		}
+		return subdomain
 	}
 
 	return ""
 }
 
-func loadConfig() (cfg Config) {
-	f, err := ioutil.ReadFile("/config/config.json")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var conf Config
-	err = json.Unmarshal([]byte(f), &conf)
-	if err != nil {
-		log.Printf("Error unmarshalling config: %v", err)
-	}
-
-	return conf
-}
-
 func oauth2authhandler(w http.ResponseWriter, r *http.Request) {
 	referer := r.URL.Query().Get("referer")
+
+	state := generateState()
+	if state == "" {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// Set short-lived state verification cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "pylon_oauth_state",
+		Value:    state,
+		Path:     "/",
+		MaxAge:   300,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	// Set short-lived referer cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "pylon_oauth_referer",
+		Value:    referer,
+		Path:     "/",
+		MaxAge:   300,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	cfgMu.RLock()
+	clientID := cfg.OAuth.Client_ID
+	clientSecret := cfg.OAuth.Client_Secret
+	redirectURL := cfg.OAuth.Redirect_URL
+	cfgMu.RUnlock()
+
 	googleAuth := &oauth2.Config{
-		ClientID:     cfg.OAuth.Client_ID,
-		ClientSecret: cfg.OAuth.Client_Secret,
-		RedirectURL:  cfg.OAuth.Redirect_URL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
 		Scopes: []string{
 			"email",
 			"profile",
@@ -434,15 +604,77 @@ func oauth2authhandler(w http.ResponseWriter, r *http.Request) {
 		Endpoint: google.Endpoint,
 	}
 
-	url := googleAuth.AuthCodeURL(referer)
-	http.Redirect(w, r, url, http.StatusPermanentRedirect)
+	url := googleAuth.AuthCodeURL(state)
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+}
+
+func generateState() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
+
+func isValidRedirect(referer string, tldn string) bool {
+	u, err := url.Parse("https://" + referer)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+
+	if host == tldn || strings.HasSuffix(host, "."+tldn) {
+		return true
+	}
+
+	return isAllowedDomain(host)
 }
 
 func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
+	// Verify state parameter (CSRF protection)
+	stateParam := r.URL.Query().Get("state")
+	stateCookie, err := r.Cookie("pylon_oauth_state")
+	if err != nil || stateCookie.Value == "" || stateCookie.Value != stateParam {
+		http.Error(w, "CSRF State Verification Failed", http.StatusBadRequest)
+		log.Printf("OAuth callback state mismatch: param=%s, cookie=%v", stateParam, stateCookie)
+		return
+	}
+
+	// Retrieve and parse referer cookie
+	var referer string
+	refererCookie, err := r.Cookie("pylon_oauth_referer")
+	if err == nil {
+		referer = refererCookie.Value
+	}
+
+	// Clear OAuth handshake cookies
+	http.SetCookie(w, &http.Cookie{
+		Name:     "pylon_oauth_state",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "pylon_oauth_referer",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
+
+	cfgMu.RLock()
+	clientID := cfg.OAuth.Client_ID
+	clientSecret := cfg.OAuth.Client_Secret
+	redirectURL := cfg.OAuth.Redirect_URL
+	tldn := cfg.TLDN
+	cfgMu.RUnlock()
+
 	googleAuth := &oauth2.Config{
-		ClientID:     cfg.OAuth.Client_ID,
-		ClientSecret: cfg.OAuth.Client_Secret,
-		RedirectURL:  cfg.OAuth.Redirect_URL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
 		Scopes: []string{
 			"email",
 			"profile",
@@ -452,34 +684,33 @@ func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
 
 	tkn, err := googleAuth.Exchange(context.TODO(), r.URL.Query().Get("code"))
 	if err != nil {
-		log.Print("Error exchanging token")
+		log.Print("Error exchanging token:", err)
+		http.Error(w, "Failed to exchange authorization token", http.StatusInternalServerError)
 		return
 	}
 
 	if !tkn.Valid() {
-		log.Print("Invalid token")
+		log.Print("Invalid token received")
+		http.Error(w, "Invalid Token", http.StatusBadRequest)
 		return
 	}
 
 	email, err := emailFromIdToken(tkn.Extra("id_token").(string))
 	if err != nil {
 		log.Print(err)
+		http.Error(w, "Failed to decode verified email", http.StatusUnauthorized)
 		return
 	}
 
-	// if !pd.userInAllowedList(email) {
-	//         w.Header().Set("Content-Type", "text/html")
-	//         fmt.Fprintf(w, `<h3>User %s is unauthorized to access this resource.</h3>
-	//                 <button onclick="window.location.href = '/auth';">Login</button>`, email)
-	//         log.Printf("user %s not allowed", email)
-	//         return
-	// }
-
-	session, _ := store.Get(r, "pylon")
+	sessionStore := getSessionStore()
+	session, _ := sessionStore.Get(r, "pylon")
 	session.Values["email"] = email
 	session.Options = &sessions.Options{
-		Path:   "/",
-		Domain: cfg.TLDN,
+		Path:     "/",
+		Domain:   tldn,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
 	}
 	err = session.Save(r, w)
 	if err != nil {
@@ -487,9 +718,14 @@ func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	referer := r.URL.Query().Get("state")
 	if referer == "" {
 		fmt.Fprintf(w, "Authenticated as %s", email)
+		return
+	}
+
+	if !isValidRedirect(referer, tldn) {
+		http.Error(w, "Forbidden Redirect Target", http.StatusForbidden)
+		log.Printf("Blocked open redirect attempt to: %s", referer)
 		return
 	}
 
@@ -509,16 +745,15 @@ func (pd *ProxyDetails) isUnauthenticatedRoute(path string) bool {
 	if len(pd.UnauthenticatedRoutesRegex.String()) > 0 && pd.UnauthenticatedRoutesRegex.MatchString(path) {
 		log.Printf("Bypass Pylon due to regex match: %v for path: %s for internal host: %s", pd.UnauthenticatedRoutesRegex.String(), path, pd.Internal)
 		return true
-	} else {
-		return false
 	}
+	return false
 }
 
 func emailFromIdToken(idToken string) (string, error) {
-
-	// id_token is a base64 encode ID token payload
-	// https://developers.google.com/accounts/docs/OAuth2Login#obtainuserinfo
 	jwt := strings.Split(idToken, ".")
+	if len(jwt) < 2 {
+		return "", errors.New("invalid jwt format")
+	}
 	jwtData := strings.TrimSuffix(jwt[1], "=")
 	b, err := base64.RawURLEncoding.DecodeString(jwtData)
 	if err != nil {
@@ -534,10 +769,10 @@ func emailFromIdToken(idToken string) (string, error) {
 		return "", err
 	}
 	if email.Email == "" {
-		return "", errors.New("missing email")
+		return "", errors.New("missing email in token payload")
 	}
 	if !email.EmailVerified {
-		return "", fmt.Errorf("email %s not listed as verified", email.Email)
+		return "", fmt.Errorf("email %s not verified", email.Email)
 	}
 	return email.Email, nil
 }
