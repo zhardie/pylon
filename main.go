@@ -396,6 +396,12 @@ func mainProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if GitHub App Manifest callback
+	if r.URL.Path == "/pylon/github/register" {
+		githubRegisterHandler(w, r)
+		return
+	}
+
 	// 4. Resolve Proxy Destination
 	pd, found := lookupProxy(r.Host)
 	if !found {
@@ -1192,4 +1198,79 @@ func (pd *ProxyDetails) isUnauthenticatedRoute(path string) bool {
 	}
 	return false
 }
+
+func githubRegisterHandler(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "Missing registration code", http.StatusBadRequest)
+		return
+	}
+
+	// Exchange code for app credentials
+	apiURL := fmt.Sprintf("https://api.github.com/app-manifests/%s/conversions", code)
+	req, err := http.NewRequest("POST", apiURL, nil)
+	if err != nil {
+		log.Print("Error creating conversion request:", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Print("Error doing conversion request:", err)
+		http.Error(w, "Failed to register App with GitHub", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		log.Printf("GitHub conversion API returned status %d", resp.StatusCode)
+		http.Error(w, "GitHub App registration failed", http.StatusBadRequest)
+		return
+	}
+
+	var appDetails struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		Name         string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&appDetails); err != nil {
+		log.Print("Error decoding app details:", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// Add to config
+	cfgMu.Lock()
+	tldn := cfg.TLDN
+	// If oauth_providers doesn't exist, make it
+	if cfg.OAuthProviders == nil {
+		cfg.OAuthProviders = make(map[string]OAuthProvider)
+	}
+	cfg.OAuthProviders["github"] = OAuthProvider{
+		ID:           "github",
+		Name:         "GitHub App",
+		Type:         "github",
+		ClientID:     appDetails.ClientID,
+		ClientSecret: appDetails.ClientSecret,
+		RedirectURL:  fmt.Sprintf("https://%s/pylon/callback/github", tldn),
+		Scopes:       []string{"read:user", "user:email"},
+	}
+	cfgCopy := cfg
+	cfgMu.Unlock()
+
+	// Write config to disk
+	pretty, err := json.MarshalIndent(cfgCopy, "", "    ")
+	if err == nil {
+		_ = os.WriteFile(getConfigPath(), pretty, 0600)
+	}
+
+	// Reload config in memory
+	_ = loadConfig()
+
+	// Redirect back to admin console
+	http.Redirect(w, r, "http://"+tldn+":3001/#/", http.StatusFound)
+}
+
 

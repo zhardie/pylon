@@ -170,6 +170,16 @@ async function saveConfig() {
         }
     }
 }
+
+async function registerGithubAutomatically() {
+    await saveConfig()
+    setTimeout(() => {
+        const form = document.getElementById('github-manifest-form') as HTMLFormElement
+        if (form) {
+            form.submit()
+        }
+    }, 500)
+}
 </script>
 
 <div class="main-container">
@@ -219,6 +229,31 @@ async function saveConfig() {
                             </select>
                             <button class="btn-primary" on:click={addProvider}>Add Provider</button>
                         </div>
+
+                        {#if selectedProviderType === 'github'}
+                            <div class="github-magic-box">
+                                <span class="material-icons magic-icon">auto_awesome</span>
+                                <div class="magic-text">
+                                    <strong>One-Click Automated Setup:</strong> Pylon can automatically register itself as a private GitHub App on your GitHub account, configure the callback URIs, and write the generated Client ID and Client Secret keys back to your config file for you.
+                                </div>
+                                <button class="btn-success" on:click={registerGithubAutomatically} disabled={!config.tldn}>
+                                    ⚡ Register Automatically
+                                </button>
+                                
+                                <form action="https://github.com/settings/apps/new" method="post" id="github-manifest-form" style="display: none;">
+                                    <input type="hidden" name="manifest" value={JSON.stringify({
+                                        name: `Pylon Gateway (${config.tldn})`,
+                                        url: `https://${config.tldn}`,
+                                        hook_attributes: { active: false },
+                                        redirect_url: `https://${config.tldn}/pylon/github/register`,
+                                        callback_urls: [`https://${config.tldn}/pylon/callback/github`],
+                                        public: false,
+                                        default_permissions: {},
+                                        default_events: []
+                                    })} />
+                                </form>
+                            </div>
+                        {/if}
 
                         {#if config.oauth_providers && Object.keys(config.oauth_providers).length > 0}
                             <div class="providers-list">
@@ -449,6 +484,31 @@ async function saveConfig() {
                             </select>
                             <button class="btn-primary" on:click={addProvider}>Add Provider</button>
                         </div>
+
+                        {#if selectedProviderType === 'github'}
+                            <div class="github-magic-box">
+                                <span class="material-icons magic-icon">auto_awesome</span>
+                                <div class="magic-text">
+                                    <strong>One-Click Automated Setup:</strong> Pylon can automatically register itself as a private GitHub App on your GitHub account, configure the callback URIs, and write the generated Client ID and Client Secret keys back to your config file for you.
+                                </div>
+                                <button class="btn-success" on:click={registerGithubAutomatically} disabled={!config.tldn}>
+                                    ⚡ Register Automatically
+                                </button>
+                                
+                                <form action="https://github.com/settings/apps/new" method="post" id="github-manifest-form" style="display: none;">
+                                    <input type="hidden" name="manifest" value={JSON.stringify({
+                                        name: `Pylon Gateway (${config.tldn})`,
+                                        url: `https://${config.tldn}`,
+                                        hook_attributes: { active: false },
+                                        redirect_url: `https://${config.tldn}/pylon/github/register`,
+                                        callback_urls: [`https://${config.tldn}/pylon/callback/github`],
+                                        public: false,
+                                        default_permissions: {},
+                                        default_events: []
+                                    })} />
+                                </form>
+                            </div>
+                        {/if}
 
                         {#if config.oauth_providers && Object.keys(config.oauth_providers).length > 0}
                             <div class="providers-list">
@@ -1042,5 +1102,29 @@ async function saveConfig() {
         border-radius: 4px;
         font-family: monospace;
         font-weight: 600;
+    }
+
+    .github-magic-box {
+        margin-top: 20px;
+        background: rgba(16, 185, 129, 0.08);
+        border: 1px solid rgba(16, 185, 129, 0.25);
+        border-radius: 12px;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        align-items: flex-start;
+        text-align: left;
+        margin-bottom: 24px;
+    }
+
+    .magic-icon {
+        color: #10b981;
+    }
+
+    .magic-text {
+        font-size: 13.5px;
+        color: #a7f3d0;
+        line-height: 1.5;
     }
 </style>
