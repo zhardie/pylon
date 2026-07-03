@@ -551,6 +551,7 @@ func oauth2authhandler(w http.ResponseWriter, r *http.Request) {
 
 	cfgMu.RLock()
 	prov, found := cfg.OAuthProviders[providerKey]
+	tldn := cfg.TLDN
 	cfgMu.RUnlock()
 
 	if !found {
@@ -568,6 +569,7 @@ func oauth2authhandler(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "pylon_oauth_state",
 		Value:    state,
+		Domain:   tldn,
 		Path:     "/",
 		MaxAge:   300,
 		HttpOnly: true,
@@ -579,6 +581,7 @@ func oauth2authhandler(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "pylon_oauth_referer",
 		Value:    referer,
+		Domain:   tldn,
 		Path:     "/",
 		MaxAge:   300,
 		HttpOnly: true,
@@ -664,6 +667,7 @@ func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "pylon_oauth_state",
 		Value:    "",
+		Domain:   tldn,
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
@@ -671,6 +675,7 @@ func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "pylon_oauth_referer",
 		Value:    "",
+		Domain:   tldn,
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,

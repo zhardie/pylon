@@ -200,7 +200,7 @@ async function saveConfig() {
                         </div>
                         
                         <div class="input-group">
-                            <label for="admin-pass">Admin Password</label>
+                            <label for="admin-pass">Admin Password (Username will be 'admin')</label>
                             <input id="admin-pass" type="password" placeholder="Create admin password" bind:value={newPassword} />
                         </div>
                     </div>
@@ -329,6 +329,13 @@ async function saveConfig() {
                                 <span class="review-val">{config.oauth_providers ? Object.keys(config.oauth_providers).join(', ') : 'None'}</span>
                             </div>
                         </div>
+
+                        <div class="onboarding-warning">
+                            <span class="material-icons warning-icon">info</span>
+                            <div class="warning-text">
+                                <strong>Important Credentials Info:</strong> After setup, the admin dashboard will lock down. When prompted by your browser, sign in with username <code>admin</code> and your chosen password.
+                            </div>
+                        </div>
                     </div>
                 {/if}
             </div>
@@ -418,7 +425,7 @@ async function saveConfig() {
                                 <input type="text" bind:value={config.tldn} placeholder="e.g. yourdomain.com" />
                             </div>
                             <div class="input-group-half">
-                                <label>Update Admin Password (leave blank to keep current)</label>
+                                <label>Update Admin Password (Username: 'admin')</label>
                                 <input type="password" bind:value={newPassword} placeholder="New admin password" />
                             </div>
                         </div>
@@ -1004,5 +1011,36 @@ async function saveConfig() {
         width: 16px;
         height: 16px;
         accent-color: #38bdf8;
+    }
+
+    .onboarding-warning {
+        margin-top: 24px;
+        background: rgba(245, 158, 11, 0.08);
+        border: 1px solid rgba(245, 158, 11, 0.25);
+        border-radius: 12px;
+        padding: 16px;
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        text-align: left;
+    }
+
+    .warning-icon {
+        color: #f59e0b;
+    }
+
+    .warning-text {
+        font-size: 13.5px;
+        color: #fbbf24;
+        line-height: 1.5;
+    }
+
+    .warning-text code {
+        background-color: rgba(15, 23, 42, 0.6);
+        color: #f1f5f9;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-weight: 600;
     }
 </style>
