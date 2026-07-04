@@ -18,6 +18,7 @@ let onboardStep = 1
 let activeTab = 'proxies'
 let newPassword = ""
 let selectedProviderType = "google"
+let tldnInput = ""
 
 onMount(async () => {
     // Dev Mode Mock Config
@@ -40,6 +41,7 @@ onMount(async () => {
             "oauth_providers": {},
             "onboarded": false
         }
+        tldnInput = config.tldn || ""
     } else {
         // Prod Mode Fetch
         await fetchConfig()
@@ -55,6 +57,7 @@ async function fetchConfig() {
             return
         }
         config = await res.json()
+        tldnInput = config.tldn || ""
     } catch (err) {
         console.error("Failed to load config:", err)
     }
@@ -132,6 +135,7 @@ function removeProvider(provId: string) {
 }
 
 async function saveConfig() {
+    config.tldn = tldnInput
     if (newPassword) {
         config.admin_password_hash = newPassword
     }
@@ -139,7 +143,7 @@ async function saveConfig() {
     // Update redirect URLs dynamically based on current TLDN
     if (config.oauth_providers) {
         for (let provId in config.oauth_providers) {
-            config.oauth_providers[provId].redirect_url = `https://${config.tldn || 'yourdomain.com'}/pylon/callback/${provId}`
+            config.oauth_providers[provId].redirect_url = `https://${tldnInput || 'yourdomain.com'}/pylon/callback/${provId}`
         }
     }
 
@@ -172,13 +176,33 @@ async function saveConfig() {
 }
 
 async function registerGithubAutomatically() {
+    config.tldn = tldnInput
     await saveConfig()
-    setTimeout(() => {
-        const form = document.getElementById('github-manifest-form') as HTMLFormElement
-        if (form) {
-            form.submit()
-        }
-    }, 500)
+    
+    const domain = tldnInput || 'yourdomain.com'
+    
+    const manifest = {
+        name: `Pylon Gateway (${domain})`,
+        url: `https://${domain}`,
+        hook_attributes: { url: `https://${domain}`, active: false },
+        redirect_url: `https://${domain}/pylon/github/register`,
+        callback_urls: [`https://${domain}/pylon/callback/github`],
+        public: false,
+        default_permissions: {},
+        default_events: []
+    }
+    
+    // Create a fresh form entirely in JS to avoid any Svelte DOM lifecycle issues
+    const form = document.createElement('form')
+    form.method = 'POST'
+    form.action = 'https://github.com/settings/apps/new'
+    const input = document.createElement('input')
+    input.type = 'hidden'
+    input.name = 'manifest'
+    input.value = JSON.stringify(manifest)
+    form.appendChild(input)
+    document.body.appendChild(form)
+    form.submit()
 }
 </script>
 
@@ -206,7 +230,7 @@ async function registerGithubAutomatically() {
                         
                         <div class="input-group">
                             <label for="tldn">TLD Domain Name</label>
-                            <input id="tldn" type="text" placeholder="e.g. yourdomain.com" bind:value={config.tldn} />
+                            <input id="tldn" type="text" placeholder="e.g. yourdomain.com" bind:value={tldnInput} />
                         </div>
                         
                         <div class="input-group">
@@ -236,22 +260,11 @@ async function registerGithubAutomatically() {
                                 <div class="magic-text">
                                     <strong>One-Click Automated Setup:</strong> Pylon can automatically register itself as a private GitHub App on your GitHub account, configure the callback URIs, and write the generated Client ID and Client Secret keys back to your config file for you.
                                 </div>
-                                <button class="btn-success" on:click={registerGithubAutomatically} disabled={!config.tldn}>
+                                <button class="btn-success" on:click={registerGithubAutomatically} disabled={!tldnInput}>
                                     ⚡ Register Automatically
                                 </button>
                                 
-                                <form action="https://github.com/settings/apps/new" method="post" id="github-manifest-form" style="display: none;">
-                                    <input type="hidden" name="manifest" value={JSON.stringify({
-                                        name: `Pylon Gateway (${config.tldn})`,
-                                        url: `https://${config.tldn}`,
-                                        hook_attributes: { active: false },
-                                        redirect_url: `https://${config.tldn}/pylon/github/register`,
-                                        callback_urls: [`https://${config.tldn}/pylon/callback/github`],
-                                        public: false,
-                                        default_permissions: {},
-                                        default_events: []
-                                    })} />
-                                </form>
+
                             </div>
                         {/if}
 
@@ -383,9 +396,9 @@ async function registerGithubAutomatically() {
                 {/if}
 
                 {#if onboardStep < 3}
-                    <button class="btn-primary" disabled={onboardStep === 1 && (!config.tldn || !newPassword)} on:click={() => onboardStep++}>Next</button>
+                    <button class="btn-primary" disabled={onboardStep === 1 && (!tldnInput || !newPassword)} on:click={() => onboardStep++}>Next</button>
                 {:else}
-                    <button class="btn-success" disabled={!config.tldn || !config.oauth_providers || Object.keys(config.oauth_providers).length === 0} on:click={saveConfig}>Finish Setup & Lock</button>
+                    <button class="btn-success" disabled={!tldnInput || !config.oauth_providers || Object.keys(config.oauth_providers).length === 0} on:click={saveConfig}>Finish Setup & Lock</button>
                 {/if}
             </div>
         </div>
@@ -457,7 +470,7 @@ async function registerGithubAutomatically() {
                         <div class="input-row">
                             <div class="input-group-half">
                                 <label>TLD Domain Name</label>
-                                <input type="text" bind:value={config.tldn} placeholder="e.g. yourdomain.com" />
+                                <input type="text" bind:value={tldnInput} placeholder="e.g. yourdomain.com" />
                             </div>
                             <div class="input-group-half">
                                 <label>Update Admin Password (Username: 'admin')</label>
@@ -491,22 +504,11 @@ async function registerGithubAutomatically() {
                                 <div class="magic-text">
                                     <strong>One-Click Automated Setup:</strong> Pylon can automatically register itself as a private GitHub App on your GitHub account, configure the callback URIs, and write the generated Client ID and Client Secret keys back to your config file for you.
                                 </div>
-                                <button class="btn-success" on:click={registerGithubAutomatically} disabled={!config.tldn}>
+                                <button class="btn-success" on:click={registerGithubAutomatically} disabled={!tldnInput}>
                                     ⚡ Register Automatically
                                 </button>
                                 
-                                <form action="https://github.com/settings/apps/new" method="post" id="github-manifest-form" style="display: none;">
-                                    <input type="hidden" name="manifest" value={JSON.stringify({
-                                        name: `Pylon Gateway (${config.tldn})`,
-                                        url: `https://${config.tldn}`,
-                                        hook_attributes: { active: false },
-                                        redirect_url: `https://${config.tldn}/pylon/github/register`,
-                                        callback_urls: [`https://${config.tldn}/pylon/callback/github`],
-                                        public: false,
-                                        default_permissions: {},
-                                        default_events: []
-                                    })} />
-                                </form>
+
                             </div>
                         {/if}
 

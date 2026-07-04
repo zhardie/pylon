@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  pylon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pylon
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "3001:3001"
+    volumes:
+      - ./config:/config
+      - ./certs:/certs
+    # environment:
+      # Optional overrides (you can also just configure these in the onboarding UI)
+      # - PYLON_TLDN=yourdomain.com
+      # - PYLON_ADMIN_PASSWORD=myadminpassword
+      # - GOOGLE_CLIENT_ID=your-google-client-id
+      # - GOOGLE_CLIENT_SECRET=your-google-client-secret
