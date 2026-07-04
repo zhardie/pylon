@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount } from 'svelte'
+import { onboarded } from '../stores.js'
 import IconButton from '@smui/icon-button'
 import Textfield from '@smui/textfield'
 import DataTable, { Head, Body, Row, Cell } from '@smui/data-table'
@@ -40,6 +41,7 @@ onMount(async () => {
             "oauth_providers": {},
             "onboarded": false
         }
+        onboarded.set(config.onboarded)
     } else {
         // Prod Mode Fetch
         await fetchConfig()
@@ -55,6 +57,10 @@ async function fetchConfig() {
             return
         }
         config = await res.json()
+        if (!config.proxies || config.proxies.length === 0) {
+            config.proxies = [{internal: null, external: null, allowed_users: [], unauthenticated_routes: []}]
+        }
+        onboarded.set(config.onboarded)
     } catch (err) {
         console.error("Failed to load config:", err)
     }
@@ -146,6 +152,7 @@ async function saveConfig() {
     if (import.meta.env.DEV) {
         configSnackbarText = "DEV MODE MOCK SAVE"
         config.onboarded = true
+        onboarded.set(true)
         config = config
         configSnackbar.open()
     } else {
@@ -406,48 +413,54 @@ async function registerGithubAutomatically() {
             {#if activeTab === 'proxies'}
                 <LayoutGrid style="width: 100%; padding: 0;">
                     <GridCell span={12}>
-                        <DataTable table$aria-label="Proxy list" style="width: 100%; background: transparent; border: none;">
-                            <Head>
-                                <Row>
-                                    <Cell style="color: #94a3b8;">External Address (Domain)</Cell>
-                                    <Cell style="color: #94a3b8;">Internal Address (IP/Port)</Cell>
-                                    <Cell style="color: #94a3b8; width: 60px;"></Cell>
-                                    <Cell style="color: #94a3b8; width: 60px;"></Cell>
-                                </Row>
-                            </Head>
-                            <Body>
+                        <table class="proxy-table">
+                            <thead>
+                                <tr>
+                                    <th>External Address (Domain)</th>
+                                    <th>Internal Address (IP/Port)</th>
+                                    <th style="width: 60px;"></th>
+                                    <th style="width: 60px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
                                 {#each config.proxies as proxy, i}
-                                <Row class="proxy-row">
-                                    <Cell>
-                                        <Textfield class="proxy-textfield" variant="outlined" bind:value={proxy.external} />
-                                    </Cell>
-                                    <Cell>
-                                        <Textfield class="proxy-textfield" variant="outlined" bind:value={proxy.internal} />
-                                    </Cell>
-                                    <Cell>
-                                        <IconButton class="material-icons action-btn" aria-label="Info" on:click={() => (proxyDetail = proxy)}>info</IconButton>
-                                    </Cell>
-                                    <Cell>
-                                        <IconButton class="material-icons action-btn delete" aria-label="Delete" on:click={() => (deleteProxy(i))}>delete</IconButton>
-                                    </Cell>
-                                </Row>
+                                <tr class="proxy-row">
+                                    <td>
+                                        <input type="text" class="proxy-input" bind:value={proxy.external} placeholder="e.g. app.hardie.dev" />
+                                    </td>
+                                    <td>
+                                        <input type="text" class="proxy-input" bind:value={proxy.internal} placeholder="e.g. http://localhost:8080" />
+                                    </td>
+                                    <td class="action-cell">
+                                        <button class="btn-icon-ghost" on:click={() => (proxyDetail = proxy)} aria-label="Info">
+                                            <span class="material-icons">info</span>
+                                        </button>
+                                    </td>
+                                    <td class="action-cell">
+                                        <button class="btn-icon-ghost delete" on:click={() => (deleteProxy(i))} aria-label="Delete">
+                                            <span class="material-icons">delete</span>
+                                        </button>
+                                    </td>
+                                </tr>
                                 {/each}
-                                <Row>
-                                    <Cell colspan="2">
+                                <tr class="add-row">
+                                    <td colspan="2">
                                         <div class="action-bar">
-                                            <Button on:click={saveConfig} variant="raised" style="background-color: #4f46e5;">
-                                                <Label>Save Changes</Label>
-                                                <Icon class="material-icons">save</Icon>
-                                            </Button>
+                                            <button class="btn-success btn-icon-group" on:click={saveConfig}>
+                                                <span class="material-icons">save</span>
+                                                <span>Save Changes</span>
+                                            </button>
                                         </div>
-                                    </Cell>
-                                    <Cell></Cell>
-                                    <Cell>
-                                        <IconButton class="material-icons action-btn add" aria-label="Add" on:click={() => {addProxy({internal: null, external: null, allowed_users: [], unauthenticated_routes: []})}}>add</IconButton>
-                                    </Cell>
-                                </Row>
-                            </Body>
-                        </DataTable>
+                                    </td>
+                                    <td></td>
+                                    <td class="action-cell">
+                                        <button class="btn-add" on:click={() => {addProxy({internal: null, external: null, allowed_users: [], unauthenticated_routes: []})}} aria-label="Add Proxy Route">
+                                            <span class="material-icons">add</span>
+                                        </button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </GridCell>
                 </LayoutGrid>
             {:else if activeTab === 'settings'}
@@ -580,11 +593,75 @@ async function registerGithubAutomatically() {
 </div>
 
 <style>
-    /* Premium Modern Dark Aesthetic CSS Stylesheet */
+    /* CSS Variables for Light & Dark Mode */
     :global(body) {
-        background-color: #0f172a !important;
-        color: #e2e8f0 !important;
+        --bg-main: #f8fafc;
+        --text-main: #0f172a;
+        --card-bg: rgba(255, 255, 255, 0.7);
+        --card-border: rgba(0, 0, 0, 0.08);
+        --input-bg: #ffffff;
+        --input-border: #cbd5e1;
+        --input-text: #0f172a;
+        --helper-text: #475569;
+        --step-line: #cbd5e1;
+        --step-inactive: #64748b;
+        --glass-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+        --card-header-bg: rgba(241, 245, 249, 0.5);
+        --guide-bg: rgba(241, 245, 249, 0.8);
+        --guide-border: rgba(0, 0, 0, 0.05);
+        --danger-bg: rgba(239, 68, 68, 0.08);
+        --danger-border: rgba(239, 68, 68, 0.2);
+        --magic-bg: rgba(16, 185, 129, 0.05);
+        --magic-border: rgba(16, 185, 129, 0.2);
+        --tab-btn-bg: #e2e8f0;
+        --tab-btn-text: #475569;
+        --tab-btn-active-bg: #ffffff;
+        --tab-btn-active-text: #0f172a;
+        --divider: #cbd5e1;
+        --icon-btn-color: #64748b;
+        --icon-btn-hover: #3b82f6;
+        --h3-color: #0f172a;
+        --review-val: #0f172a;
+        --code-bg: #e2e8f0;
+        --code-text: #0f172a;
+
+        background-color: var(--bg-main) !important;
+        color: var(--text-main) !important;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+        transition: background-color 0.25s ease, color 0.25s ease !important;
+        margin: 0;
+    }
+
+    :global(body.dark-mode) {
+        --bg-main: #0f172a;
+        --text-main: #e2e8f0;
+        --card-bg: rgba(30, 41, 59, 0.4);
+        --card-border: rgba(255, 255, 255, 0.08);
+        --input-bg: #0f172a;
+        --input-border: #334155;
+        --input-text: #f1f5f9;
+        --helper-text: #94a3b8;
+        --step-line: #334155;
+        --step-inactive: #64748b;
+        --glass-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+        --card-header-bg: rgba(15, 23, 42, 0.3);
+        --guide-bg: rgba(15, 23, 42, 0.2);
+        --guide-border: rgba(255, 255, 255, 0.05);
+        --danger-bg: rgba(239, 68, 68, 0.05);
+        --danger-border: rgba(239, 68, 68, 0.15);
+        --magic-bg: rgba(16, 185, 129, 0.08);
+        --magic-border: rgba(16, 185, 129, 0.25);
+        --tab-btn-bg: #1e293b;
+        --tab-btn-text: #94a3b8;
+        --tab-btn-active-bg: rgba(255, 255, 255, 0.05);
+        --tab-btn-active-text: #ffffff;
+        --divider: #334155;
+        --icon-btn-color: #94a3b8;
+        --icon-btn-hover: #38bdf8;
+        --h3-color: #f1f5f9;
+        --review-val: #f1f5f9;
+        --code-bg: #0f172a;
+        --code-text: #f1f5f9;
     }
 
     .main-container {
@@ -596,15 +673,16 @@ async function registerGithubAutomatically() {
 
     /* Glassmorphism Wizard & Settings Cards */
     .wizard-card {
-        background: rgba(30, 41, 59, 0.4);
+        background: var(--card-bg);
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--card-border);
         border-radius: 24px;
         padding: 40px;
-        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+        box-shadow: var(--glass-shadow);
         max-width: 800px;
         margin: 40px auto 0 auto;
+        transition: background 0.3s, border-color 0.3s;
     }
 
     .wizard-header {
@@ -631,7 +709,7 @@ async function registerGithubAutomatically() {
     .step {
         font-size: 14px;
         font-weight: 600;
-        color: #64748b;
+        color: var(--step-inactive);
         transition: color 0.3s;
     }
 
@@ -642,7 +720,7 @@ async function registerGithubAutomatically() {
     .step-line {
         height: 2px;
         width: 60px;
-        background-color: #334155;
+        background-color: var(--step-line);
         margin: 0 16px;
         transition: background-color 0.3s;
     }
@@ -659,12 +737,12 @@ async function registerGithubAutomatically() {
         font-size: 20px;
         margin-top: 0;
         margin-bottom: 8px;
-        color: #f1f5f9;
+        color: var(--h3-color);
     }
 
     .helper-text {
         font-size: 14px;
-        color: #94a3b8;
+        color: var(--helper-text);
         margin-bottom: 24px;
         line-height: 1.5;
     }
@@ -678,18 +756,18 @@ async function registerGithubAutomatically() {
     .input-group label {
         font-size: 13px;
         font-weight: 600;
-        color: #94a3b8;
+        color: var(--helper-text);
         margin-bottom: 8px;
     }
 
     .input-group input, .input-group-half input, .input-group-third input, .provider-selector select {
-        background-color: #0f172a;
-        border: 1px solid #334155;
+        background-color: var(--input-bg);
+        border: 1px solid var(--input-border);
         border-radius: 10px;
         padding: 12px 16px;
-        color: #f1f5f9;
+        color: var(--input-text);
         font-size: 15px;
-        transition: border-color 0.2s, box-shadow 0.2s;
+        transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s, color 0.2s;
     }
 
     .input-group input:focus, .input-group-half input:focus, .input-group-third input:focus, .provider-selector select:focus {
@@ -699,8 +777,8 @@ async function registerGithubAutomatically() {
     }
 
     .readonly-input {
-        background-color: #1e293b !important;
-        color: #94a3b8 !important;
+        background-color: var(--tab-btn-bg) !important;
+        color: var(--helper-text) !important;
         cursor: not-allowed;
     }
 
@@ -719,7 +797,7 @@ async function registerGithubAutomatically() {
     .input-group-half label, .input-group-third label {
         font-size: 13px;
         font-weight: 600;
-        color: #94a3b8;
+        color: var(--helper-text);
         margin-bottom: 8px;
     }
 
@@ -738,6 +816,13 @@ async function registerGithubAutomatically() {
     .provider-selector select {
         flex: 1;
         cursor: pointer;
+        -webkit-appearance: none;
+        appearance: none;
+        background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+        background-repeat: no-repeat;
+        background-position: right 16px center;
+        background-size: 16px;
+        padding-right: 40px !important;
     }
 
     .providers-list {
@@ -747,10 +832,11 @@ async function registerGithubAutomatically() {
     }
 
     .provider-card {
-        background-color: rgba(15, 23, 42, 0.5);
-        border: 1px solid #334155;
+        background-color: var(--card-header-bg);
+        border: 1px solid var(--card-border);
         border-radius: 16px;
         padding: 24px;
+        transition: background-color 0.3s, border-color 0.3s;
     }
 
     .provider-card-header {
@@ -758,7 +844,7 @@ async function registerGithubAutomatically() {
         justify-content: space-between;
         align-items: center;
         margin-bottom: 20px;
-        border-bottom: 1px solid #334155;
+        border-bottom: 1px solid var(--divider);
         padding-bottom: 12px;
     }
 
@@ -770,10 +856,11 @@ async function registerGithubAutomatically() {
 
     .setup-guide {
         margin-top: 20px;
-        background-color: rgba(30, 41, 59, 0.5);
+        background-color: var(--guide-bg);
         border-radius: 12px;
         padding: 16px 20px;
         font-size: 13px;
+        border: 1px solid var(--guide-border);
         border-left: 4px solid #818cf8;
     }
 
@@ -787,7 +874,7 @@ async function registerGithubAutomatically() {
     .setup-guide ol {
         margin: 0;
         padding-left: 20px;
-        color: #94a3b8;
+        color: var(--helper-text);
         line-height: 1.8;
     }
 
@@ -801,25 +888,25 @@ async function registerGithubAutomatically() {
     }
 
     .setup-guide code {
-        background-color: #0f172a;
-        color: #f1f5f9;
+        background-color: var(--code-bg);
+        color: var(--code-text);
         padding: 2px 6px;
         border-radius: 4px;
         font-family: monospace;
     }
 
     .review-details {
-        background-color: rgba(15, 23, 42, 0.4);
+        background-color: var(--card-header-bg);
         border-radius: 14px;
         padding: 20px;
-        border: 1px solid #334155;
+        border: 1px solid var(--card-border);
     }
 
     .review-row {
         display: flex;
         justify-content: space-between;
         padding: 12px 0;
-        border-bottom: 1px solid #334155;
+        border-bottom: 1px solid var(--divider);
     }
 
     .review-row:last-child {
@@ -827,12 +914,12 @@ async function registerGithubAutomatically() {
     }
 
     .review-label {
-        color: #94a3b8;
+        color: var(--helper-text);
         font-weight: 500;
     }
 
     .review-val {
-        color: #f1f5f9;
+        color: var(--review-val);
         font-weight: 600;
     }
 
@@ -840,16 +927,16 @@ async function registerGithubAutomatically() {
         display: flex;
         justify-content: space-between;
         margin-top: 40px;
-        border-top: 1px solid #334155;
+        border-top: 1px solid var(--divider);
         padding-top: 24px;
     }
 
     .empty-notice {
         text-align: center;
-        color: #64748b;
+        color: var(--step-inactive);
         font-size: 14px;
         padding: 40px;
-        border: 2px dashed #334155;
+        border: 2px dashed var(--divider);
         border-radius: 16px;
     }
 
@@ -879,14 +966,15 @@ async function registerGithubAutomatically() {
     }
 
     .btn-primary:disabled {
-        background-color: #1e293b;
-        color: #475569;
+        background-color: var(--tab-btn-bg);
+        color: var(--step-inactive);
         cursor: not-allowed;
     }
 
     .btn-secondary {
-        background-color: #334155;
-        color: #f1f5f9;
+        background-color: var(--tab-btn-bg);
+        color: var(--text-main);
+        border: 1px solid var(--card-border);
     }
 
     .btn-secondary:hover {
@@ -903,8 +991,8 @@ async function registerGithubAutomatically() {
     }
 
     .btn-success:disabled {
-        background-color: #1e293b;
-        color: #475569;
+        background-color: var(--tab-btn-bg);
+        color: var(--step-inactive);
         cursor: not-allowed;
     }
 
@@ -923,7 +1011,7 @@ async function registerGithubAutomatically() {
     /* Dashboard Header & Tab Styles */
     .dashboard-header {
         margin-bottom: 40px;
-        border-bottom: 1px solid #334155;
+        border-bottom: 1px solid var(--divider);
         padding-bottom: 2px;
     }
 
@@ -935,7 +1023,7 @@ async function registerGithubAutomatically() {
     .tab-btn {
         background: transparent;
         border: none;
-        color: #94a3b8;
+        color: var(--helper-text);
         font-family: inherit;
         font-weight: 600;
         font-size: 15px;
@@ -953,7 +1041,7 @@ async function registerGithubAutomatically() {
     }
 
     .tab-btn:hover {
-        color: #f1f5f9;
+        color: var(--text-main);
     }
 
     .tab-btn.active {
@@ -972,30 +1060,68 @@ async function registerGithubAutomatically() {
     }
 
     .dashboard-body {
-        background: rgba(30, 41, 59, 0.25);
-        border: 1px solid rgba(255, 255, 255, 0.05);
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
         border-radius: 20px;
         padding: 32px;
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        box-shadow: var(--glass-shadow);
+        transition: background 0.3s, border-color 0.3s;
     }
 
     /* Proxy Table Customizations */
-    * :global(.proxy-row) {
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+    .proxy-table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
+        margin-top: 10px;
+    }
+
+    .proxy-table th {
+        color: var(--helper-text);
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 12px 16px;
+        border-bottom: 2px solid var(--divider);
+    }
+
+    .proxy-table td {
+        padding: 12px 16px;
+        vertical-align: middle;
+    }
+
+    .proxy-row {
+        border-bottom: 1px solid var(--card-border);
         transition: background-color 0.2s;
     }
 
-    * :global(.proxy-row:hover) {
-        background-color: rgba(255, 255, 255, 0.02) !important;
+    .proxy-row:hover {
+        background-color: var(--card-header-bg);
     }
 
-    * :global(.proxy-textfield) {
+    .proxy-input {
         width: 100%;
+        background-color: var(--input-bg);
+        border: 1px solid var(--input-border);
+        border-radius: 8px;
+        padding: 10px 14px;
+        color: var(--input-text);
+        font-size: 14px;
+        box-sizing: border-box;
+        transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s, color 0.2s;
     }
 
-    * :global(.proxy-textfield input) {
-        color: #f1f5f9 !important;
-        font-size: 14px !important;
+    .proxy-input:focus {
+        outline: none;
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+    }
+
+    .action-cell {
+        text-align: center;
+        width: 60px;
+        padding: 12px 8px !important;
     }
 
     .action-bar {
@@ -1004,27 +1130,73 @@ async function registerGithubAutomatically() {
         padding: 16px 0;
     }
 
-    * :global(.action-btn) {
-        color: #94a3b8 !important;
-        transition: color 0.2s !important;
+    .btn-icon-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+    
+    .btn-icon-group span.material-icons {
+        font-size: 18px;
     }
 
-    * :global(.action-btn:hover) {
-        color: #38bdf8 !important;
+    .btn-add {
+        background-color: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        color: #10b981;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        padding: 0;
+        margin: 0 auto;
     }
 
-    * :global(.action-btn.delete:hover) {
-        color: #ef4444 !important;
+    .btn-add:hover {
+        background-color: rgba(16, 185, 129, 0.2);
+        border-color: rgba(16, 185, 129, 0.4);
+        transform: scale(1.05);
     }
 
-    * :global(.action-btn.add) {
-        color: #10b981 !important;
-        background: rgba(16, 185, 129, 0.1) !important;
-        border-radius: 50% !important;
+    .btn-add:active {
+        transform: scale(0.95);
     }
 
-    * :global(.action-btn.add:hover) {
-        background: rgba(16, 185, 129, 0.2) !important;
+    .btn-add span {
+        font-size: 20px;
+        font-weight: 700;
+    }
+
+    .btn-icon-ghost {
+        background: transparent;
+        border: none;
+        color: var(--icon-btn-color);
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background-color 0.2s, color 0.2s;
+        margin: 0 auto;
+    }
+
+    .btn-icon-ghost:hover {
+        background-color: var(--card-header-bg);
+        color: var(--icon-btn-hover);
+    }
+
+    .btn-icon-ghost.delete:hover {
+        background-color: var(--danger-bg);
+        color: #ef4444;
+    }
+
+    .btn-icon-ghost span {
+        font-size: 20px;
     }
 
     /* Settings Tab */
@@ -1035,18 +1207,19 @@ async function registerGithubAutomatically() {
     }
 
     .settings-section {
-        background: rgba(15, 23, 42, 0.3);
+        background: var(--card-header-bg);
         border-radius: 16px;
         padding: 28px;
-        border: 1px solid #334155;
+        border: 1px solid var(--card-border);
+        transition: background-color 0.3s, border-color 0.3s;
     }
 
     .settings-section h3 {
         margin-top: 0;
         margin-bottom: 24px;
         font-size: 18px;
-        color: #f1f5f9;
-        border-bottom: 1px solid #334155;
+        color: var(--h3-color);
+        border-bottom: 1px solid var(--divider);
         padding-bottom: 12px;
     }
 
@@ -1061,7 +1234,7 @@ async function registerGithubAutomatically() {
         align-items: center;
         gap: 10px;
         font-size: 14px;
-        color: #94a3b8;
+        color: var(--helper-text);
         cursor: pointer;
         user-select: none;
     }
@@ -1096,8 +1269,8 @@ async function registerGithubAutomatically() {
     }
 
     .warning-text code {
-        background-color: rgba(15, 23, 42, 0.6);
-        color: #f1f5f9;
+        background-color: var(--code-bg);
+        color: var(--code-text);
         padding: 2px 6px;
         border-radius: 4px;
         font-family: monospace;
@@ -1106,8 +1279,8 @@ async function registerGithubAutomatically() {
 
     .github-magic-box {
         margin-top: 20px;
-        background: rgba(16, 185, 129, 0.08);
-        border: 1px solid rgba(16, 185, 129, 0.25);
+        background: var(--magic-bg);
+        border: 1px solid var(--magic-border);
         border-radius: 12px;
         padding: 20px;
         display: flex;
