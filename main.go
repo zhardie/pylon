@@ -947,16 +947,16 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	// Forward request via the pre-instantiated ReverseProxy
 	remoteAddr := strings.Split(r.RemoteAddr, ":")[0]
 
-	r.Header.Set("X-Forwarded-Host", r.Host)
+    r.Header.Set("X-Forwarded-Host", r.Host)
 	if r.TLS != nil {
 		r.Header.Set("X-Forwarded-Ssl", "on")
 		r.Header.Set("X-Forwarded-Proto", "https")
+		r.Header.Set("X-Forwarded-Port", "443")
 	} else {
 		r.Header.Set("X-Forwarded-Proto", "http")
+		r.Header.Set("X-Forwarded-Port", "80")
 	}
 
-	u, _ := url.Parse(pd.Internal)
-	r.Header.Set("X-Forwarded-Port", u.Port())
 	r.Header.Set("X-Forwarded-For", remoteAddr)
 
 	pd.ReverseProxy.ServeHTTP(w, r)
