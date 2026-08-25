@@ -1,5 +1,8 @@
 frontend/node_modules
 config.json
 ./pylon
+pylon.exe
+*.exe
 certs
 .DS_Store
+
