@@ -326,3 +326,35 @@ func TestMainProxyHandlerRoutes(t *testing.T) {
 		t.Errorf("/pylon/logout expected 302 redirect, got %d", recLogout.Result().StatusCode)
 	}
 }
+
+func TestDedicatedAppsDomain(t *testing.T) {
+	setupTestConfig()
+
+	// Check isAllowedDomain includes apps.example.com and dashboard.example.com
+	if !isAllowedDomain("apps.example.com") {
+		t.Errorf("expected isAllowedDomain(apps.example.com) to be true")
+	}
+	if !isAllowedDomain("dashboard.example.com") {
+		t.Errorf("expected isAllowedDomain(dashboard.example.com) to be true")
+	}
+
+	// Unauthenticated request to https://apps.example.com/ should redirect to login
+	reqUnauth := httptest.NewRequest("GET", "https://apps.example.com/", nil)
+	recUnauth := httptest.NewRecorder()
+	mainProxyHandler(recUnauth, reqUnauth)
+	if recUnauth.Result().StatusCode != http.StatusFound {
+		t.Errorf("expected 302 redirect, got %d", recUnauth.Result().StatusCode)
+	}
+
+	// Authenticated request to https://apps.example.com/ directly renders apps portal
+	reqAuth := createAuthenticatedRequest("GET", "https://apps.example.com/", "alice@example.com")
+	recAuth := httptest.NewRecorder()
+	mainProxyHandler(recAuth, reqAuth)
+	if recAuth.Result().StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", recAuth.Result().StatusCode)
+	}
+	if !strings.Contains(recAuth.Body.String(), "Applications Portal") {
+		t.Errorf("expected Apps Portal HTML on apps.example.com/")
+	}
+}
+

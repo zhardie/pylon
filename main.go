@@ -222,16 +222,21 @@ func loadConfig() error {
 			return fmt.Errorf("invalid unauthenticated routes regex: %v", err)
 		}
 
-		u, err := url.Parse(p.Internal)
-		if err != nil {
-			return fmt.Errorf("invalid internal URL %q: %v", p.Internal, err)
-		}
+		var rp *httputil.ReverseProxy
+		isBuiltinTarget := p.Internal == "" || p.Internal == "builtin" || p.Internal == "dashboard" || p.Internal == "apps"
 
-		rp := httputil.NewSingleHostReverseProxy(u)
-		rp.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: conf.InsecureSkipVerify,
-			},
+		if !isBuiltinTarget {
+			u, err := url.Parse(p.Internal)
+			if err != nil {
+				return fmt.Errorf("invalid internal URL %q: %v", p.Internal, err)
+			}
+
+			rp = httputil.NewSingleHostReverseProxy(u)
+			rp.Transport = &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: conf.InsecureSkipVerify,
+				},
+			}
 		}
 
 		newProxies[p.External] = &ProxyDetails{
@@ -272,7 +277,7 @@ func isAllowedDomain(host string) bool {
 	tldn := cfg.TLDN
 	cfgMu.RUnlock()
 
-	if tldn != "" && host == tldn {
+	if tldn != "" && (host == tldn || host == "apps."+tldn || host == "dashboard."+tldn) {
 		return true
 	}
 
@@ -435,9 +440,20 @@ func mainProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Resolve Proxy Destination
+	// 5. Dedicated Portal Host or Resolve Proxy Destination
+	subdomain := getSubdomain(r)
+	cfgMu.RLock()
+	tldn := cfg.TLDN
+	cfgMu.RUnlock()
+
+	isPortalHost := subdomain == "apps" || subdomain == "dashboard" || (tldn != "" && r.Host == tldn)
+
 	pd, found := lookupProxy(r.Host)
 	if !found {
+		if isPortalHost && (r.URL.Path == "/" || r.URL.Path == "") {
+			appsDashboardHandler(w, r)
+			return
+		}
 		if r.URL.Path == "/" || r.URL.Path == "" {
 			http.Redirect(w, r, "/pylon/apps", http.StatusFound)
 			return
@@ -935,10 +951,13 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	session, _ := sessionStore.Get(r, "pylon")
 	emailVal := session.Values["email"]
 
-	// Dashboard Subdomain Handler
+	// Dedicated Apps / Dashboard Host or Builtin Handler
 	subdomain := getSubdomain(r)
-	if strings.HasPrefix(subdomain, "dashboard") && r.URL.Path == "/" {
-		http.Redirect(w, r, "/pylon/apps", http.StatusFound)
+	isAppsHost := strings.HasPrefix(subdomain, "dashboard") || strings.HasPrefix(subdomain, "apps")
+	isBuiltinTarget := pd.ReverseProxy == nil || pd.Internal == "builtin" || pd.Internal == "dashboard" || pd.Internal == "apps" || pd.Internal == ""
+
+	if isAppsHost || isBuiltinTarget {
+		appsDashboardHandler(w, r)
 		return
 	}
 
@@ -1102,13 +1121,20 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 func getUserAllowedApps(userEmail string) ([]string, []AppItem) {
 	cfgMu.RLock()
 	proxiesList := cfg.Proxies
+	tldn := cfg.TLDN
 	cfgMu.RUnlock()
 
 	var appStrings []string
 	var appItems []AppItem
 
 	for _, proxy := range proxiesList {
-		if strings.TrimSpace(proxy.External) == "" {
+		ext := strings.TrimSpace(proxy.External)
+		if ext == "" {
+			continue
+		}
+		// Exclude dedicated dashboard/portal routes from the app card list
+		if (tldn != "" && (ext == "apps."+tldn || ext == "dashboard."+tldn || ext == tldn)) ||
+			proxy.Internal == "builtin" || proxy.Internal == "dashboard" || proxy.Internal == "apps" {
 			continue
 		}
 		// Proxies with empty allowed_users are accessible to any authenticated user
