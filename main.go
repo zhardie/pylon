@@ -42,19 +42,22 @@ type OAuthProvider struct {
 	UserInfoURL  string   `json:"user_info_url,omitempty"`
 }
 
+type ProxyRouteConfig struct {
+	Internal              string   `json:"internal"`
+	External              string   `json:"external"`
+	AllowedUsers          []string `json:"allowed_users"`
+	UnauthenticatedRoutes []string `json:"unauthenticated_routes"`
+}
+
 type Config struct {
 	TLDN               string                   `json:"tldn"`
 	AllowedUsers       []string                 `json:"allowed_users"`
 	AdminPasswordHash  string                   `json:"admin_password_hash"`
 	InsecureSkipVerify bool                     `json:"insecure_skip_verify"`
-	Proxies            []struct {
-		Internal              string   `json:"internal"`
-		External              string   `json:"external"`
-		AllowedUsers          []string `json:"allowed_users"`
-		UnauthenticatedRoutes []string `json:"unauthenticated_routes"`
-	} `json:"proxies"`
+	Proxies            []ProxyRouteConfig       `json:"proxies"`
 	SessionKey         string                   `json:"session_key"`
 	CookieExpire       time.Duration            `json:"cookie_expire"`
+	DNS                DNSConfig                `json:"dns"`
 	
 	// Deprecated: Kept for backwards compatibility
 	OAuth              struct {
@@ -127,6 +130,10 @@ func main() {
 	fs := http.FileServer(http.Dir("frontend"))
 	frontend.Handle("/", fs)
 	frontend.HandleFunc("/config", ConfigHandler)
+	frontend.HandleFunc("/dns/status", DNSStatusHandler)
+	frontend.HandleFunc("/dns/create", DNSCreateHandler)
+	frontend.HandleFunc("/dns/sync", DNSSyncHandler)
+	frontend.HandleFunc("/dns/test", DNSTestHandler)
 
 	// Start Proxy Server (ports :http and :https)
 	server.startServer()
@@ -212,6 +219,32 @@ func loadConfig() error {
 			RedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
 			Scopes:       []string{"email", "profile"},
 		}
+	}
+
+	// Bind environment variables for DNS provider integration
+	if os.Getenv("PYLON_DNS_PROVIDER") != "" {
+		conf.DNS.Provider = os.Getenv("PYLON_DNS_PROVIDER")
+	}
+	if os.Getenv("PYLON_CLOUDFLARE_API_TOKEN") != "" {
+		conf.DNS.APIToken = os.Getenv("PYLON_CLOUDFLARE_API_TOKEN")
+	} else if os.Getenv("PYLON_DNS_API_TOKEN") != "" {
+		conf.DNS.APIToken = os.Getenv("PYLON_DNS_API_TOKEN")
+	}
+	if os.Getenv("PYLON_CLOUDFLARE_ZONE_ID") != "" {
+		conf.DNS.ZoneID = os.Getenv("PYLON_CLOUDFLARE_ZONE_ID")
+	} else if os.Getenv("PYLON_DNS_ZONE_ID") != "" {
+		conf.DNS.ZoneID = os.Getenv("PYLON_DNS_ZONE_ID")
+	}
+	if os.Getenv("PYLON_CLOUDFLARE_PROXIED") != "" {
+		conf.DNS.Proxied = os.Getenv("PYLON_CLOUDFLARE_PROXIED") == "true" || os.Getenv("PYLON_CLOUDFLARE_PROXIED") == "1"
+	} else if os.Getenv("PYLON_DNS_PROXIED") != "" {
+		conf.DNS.Proxied = os.Getenv("PYLON_DNS_PROXIED") == "true" || os.Getenv("PYLON_DNS_PROXIED") == "1"
+	}
+	if os.Getenv("PYLON_DNS_TARGET") != "" {
+		conf.DNS.Target = os.Getenv("PYLON_DNS_TARGET")
+	}
+	if os.Getenv("PYLON_DNS_AUTO_SYNC") != "" {
+		conf.DNS.AutoSync = os.Getenv("PYLON_DNS_AUTO_SYNC") == "true" || os.Getenv("PYLON_DNS_AUTO_SYNC") == "1"
 	}
 
 	// Build proxies lookup map
@@ -432,6 +465,26 @@ func mainProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Path == "/pylon/api/apps" {
 		appsAPIHandler(w, r)
+		return
+	}
+
+	if r.URL.Path == "/pylon/api/dns/status" {
+		DNSStatusHandler(w, r)
+		return
+	}
+
+	if r.URL.Path == "/pylon/api/dns/create" {
+		DNSCreateHandler(w, r)
+		return
+	}
+
+	if r.URL.Path == "/pylon/api/dns/sync" {
+		DNSSyncHandler(w, r)
+		return
+	}
+
+	if r.URL.Path == "/pylon/api/dns/test" {
+		DNSTestHandler(w, r)
 		return
 	}
 
@@ -1082,6 +1135,7 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"session_key":          cfg.SessionKey,
 			"cookie_expire":        cfg.CookieExpire,
 			"oauth_providers":      cfg.OAuthProviders,
+			"dns":                  cfg.DNS,
 			"onboarded":            onboarded,
 		}
 		payload, err := json.MarshalIndent(respMap, "", "    ")
@@ -1150,6 +1204,29 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 			log.Print("Failed to reload newly written config:", err)
 			http.Error(w, "Failed to apply configuration internally", http.StatusInternalServerError)
 			return
+		}
+
+		// If DNS AutoSync is enabled, provision missing CNAME records in background
+		if new_config.DNS.AutoSync && new_config.DNS.Provider != "" && new_config.DNS.APIToken != "" {
+			go func(c Config) {
+				provider, err := GetDNSProvider(c.DNS, c.TLDN)
+				if err == nil && provider != nil {
+					target := GetCNAMETarget(c.DNS, c.TLDN)
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					for _, p := range c.Proxies {
+						host := NormalizeHost(p.External, c.TLDN)
+						if host != "" && host != target {
+							_, err := provider.CreateOrUpdateCNAME(ctx, host, target, c.DNS.Proxied)
+							if err != nil {
+								log.Printf("AutoSync DNS error for %s -> %s: %v", host, target, err)
+							} else {
+								log.Printf("AutoSync DNS created/verified: %s -> %s", host, target)
+							}
+						}
+					}
+				}
+			}(new_config)
 		}
 
 		w.Header().Set("Content-Type", "text/plain")

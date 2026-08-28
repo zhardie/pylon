@@ -8,6 +8,14 @@
     ],
     "session_key": "put_some_random_garbage_here",
     "cookie_expire": 0,
+    "dns": {
+        "provider": "cloudflare",
+        "api_token": "put_your_cloudflare_api_token_here",
+        "zone_id": "",
+        "proxied": false,
+        "target": "",
+        "auto_sync": true
+    },
     "oauth": {
         "auth_url": "https://yourdomain.com/pylon/auth",
         "client_id": "put_your_google_client_id_here",
@@ -15,4 +23,3 @@
         "redirect_url": "https://yourdomain.com/pylon/oauth2callback"
     }
 }
-

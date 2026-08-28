@@ -17,12 +17,7 @@ func setupTestConfig() {
 		TLDN:         "example.com",
 		SessionKey:   "test-secret-session-key-123456",
 		CookieExpire: 24 * time.Hour,
-		Proxies: []struct {
-			Internal              string   `json:"internal"`
-			External              string   `json:"external"`
-			AllowedUsers          []string `json:"allowed_users"`
-			UnauthenticatedRoutes []string `json:"unauthenticated_routes"`
-		}{
+		Proxies: []ProxyRouteConfig{
 			{
 				Internal:     "http://192.168.1.10:3000",
 				External:     "grafana.example.com",

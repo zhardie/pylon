@@ -9,6 +9,18 @@ import Snackbar, { Actions, Label as SnackLabel } from '@smui/snackbar'
 import Button, { Icon, Label } from '@smui/button'
 import LayoutGrid, { Cell as GridCell } from '@smui/layout-grid'
 
+interface DNSCheckResult {
+    host: string
+    target: string
+    resolved: boolean
+    status: string
+    cname?: string
+    ips?: string[]
+    provider_record_exists?: boolean
+    provider_record_id?: string
+    message: string
+}
+
 let config: any = null
 let proxyDetail: any = null
 let configSnackbar: Snackbar
@@ -20,6 +32,34 @@ let activeTab = 'proxies'
 let newPassword = ""
 let selectedProviderType = "google"
 let tldnInput = ""
+
+// DNS State
+let dnsStatusMap: { [host: string]: DNSCheckResult } = {}
+let dnsChecking = false
+let dnsConfigured = false
+let dnsResolvingHost: { [host: string]: boolean } = {}
+let dnsTestResult: { success?: boolean, message?: string } | null = null
+let dnsTesting = false
+let dnsSyncing = false
+let showApiToken = false
+
+function getHostKey(rawHost: string): string {
+    if (!rawHost) return ""
+    let clean = rawHost.trim().toLowerCase()
+    clean = clean.replace(/^https?:\/\//, '')
+    clean = clean.split('/')[0].split(':')[0]
+    if (!clean.includes('.') && tldnInput) {
+        clean = clean + '.' + tldnInput.replace(/^\./, '')
+    }
+    return clean
+}
+
+$: missingDNSCount = (config?.proxies || []).filter((p: any) => {
+    if (!p.external) return false
+    const key = getHostKey(p.external)
+    const stat = dnsStatusMap[key]
+    return stat && !stat.resolved
+}).length
 
 onMount(async () => {
     // Dev Mode Mock Config
@@ -35,15 +75,36 @@ onMount(async () => {
                     "external": "foo.bar.com",
                     "allowed_users": ["foo@bar.com"],
                     "unauthenticated_routes": []
+                },
+                {
+                    "internal": "http://192.168.1.2:3000",
+                    "external": "grafana.bar.com",
+                    "allowed_users": [],
+                    "unauthenticated_routes": []
+                },
+                {
+                    "internal": "http://192.168.1.3:8080",
+                    "external": "unresolved-app.bar.com",
+                    "allowed_users": [],
+                    "unauthenticated_routes": []
                 }
             ],
             "session_key": "some-session-key",
             "cookie_expire": 86400000000000,
             "oauth_providers": {},
-            "onboarded": false
+            "dns": {
+                "provider": "cloudflare",
+                "api_token": "cf-dev-token-example",
+                "zone_id": "",
+                "proxied": false,
+                "target": "bar.com",
+                "auto_sync": true
+            },
+            "onboarded": true
         }
         tldnInput = config.tldn || ""
         onboarded.set(config.onboarded)
+        await fetchDNSStatus()
     } else {
         // Prod Mode Fetch
         await fetchConfig()
@@ -62,10 +123,191 @@ async function fetchConfig() {
         if (!config.proxies || config.proxies.length === 0) {
             config.proxies = [{internal: null, external: null, allowed_users: [], unauthenticated_routes: []}]
         }
+        if (!config.dns) {
+            config.dns = {
+                provider: 'none',
+                api_token: '',
+                zone_id: '',
+                proxied: false,
+                target: '',
+                auto_sync: false
+            }
+        }
         tldnInput = config.tldn || ""
         onboarded.set(config.onboarded)
+        await fetchDNSStatus()
     } catch (err) {
         console.error("Failed to load config:", err)
+    }
+}
+
+async function fetchDNSStatus() {
+    if (!config || !config.proxies) return
+    dnsChecking = true
+    try {
+        if (import.meta.env.DEV) {
+            const mockMap: { [host: string]: DNSCheckResult } = {}
+            for (const p of config.proxies) {
+                if (!p.external) continue
+                const key = getHostKey(p.external)
+                const isMockOk = key.startsWith("foo.") || key.startsWith("grafana.")
+                mockMap[key] = {
+                    host: key,
+                    target: config.tldn || "bar.com",
+                    resolved: isMockOk,
+                    status: isMockOk ? "ok" : "missing",
+                    cname: isMockOk ? (config.tldn || "bar.com") : undefined,
+                    ips: isMockOk ? ["192.168.1.1"] : [],
+                    provider_record_exists: isMockOk,
+                    message: isMockOk ? `Resolves to 192.168.1.1 (CNAME -> ${config.tldn || "bar.com"})` : "DNS record not found (NXDOMAIN)"
+                }
+            }
+            dnsStatusMap = mockMap
+            dnsConfigured = config.dns?.provider === 'cloudflare'
+            return
+        }
+
+        const res = await fetch('/dns/status')
+        if (res.ok) {
+            const data = await res.json()
+            dnsConfigured = data.configured
+            const map: { [host: string]: DNSCheckResult } = {}
+            if (data.results) {
+                for (const r of data.results) {
+                    map[r.host] = r
+                }
+            }
+            dnsStatusMap = map
+        }
+    } catch (err) {
+        console.error("Failed to check DNS status:", err)
+    } finally {
+        dnsChecking = false
+    }
+}
+
+async function createDNSRecord(rawHost: string) {
+    if (!rawHost) return
+    const key = getHostKey(rawHost)
+    dnsResolvingHost[rawHost] = true
+    try {
+        if (import.meta.env.DEV) {
+            dnsStatusMap[key] = {
+                host: key,
+                target: config.tldn || "bar.com",
+                resolved: true,
+                status: "ok",
+                cname: config.tldn || "bar.com",
+                ips: ["192.168.1.1"],
+                provider_record_exists: true,
+                message: `Resolves to 192.168.1.1 (CNAME -> ${config.tldn || "bar.com"})`
+            }
+            dnsStatusMap = { ...dnsStatusMap }
+            configSnackbarText = `Created Cloudflare CNAME record for ${key}`
+            configSnackbar.open()
+            return
+        }
+
+        const res = await fetch('/dns/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: rawHost })
+        })
+        const data = await res.json()
+        if (res.ok && data.success) {
+            configSnackbarText = data.message || `Created CNAME for ${key}`
+            configSnackbar.open()
+            await fetchDNSStatus()
+        } else {
+            configSnackbarText = `Error creating DNS record: ${data.message || 'Unknown error'}`
+            configSnackbar.open()
+        }
+    } catch (err) {
+        console.error("DNS record creation failed:", err)
+        configSnackbarText = `DNS creation failed: ${err}`
+        configSnackbar.open()
+    } finally {
+        dnsResolvingHost[rawHost] = false
+    }
+}
+
+async function syncAllMissingDNS() {
+    dnsSyncing = true
+    try {
+        if (import.meta.env.DEV) {
+            for (const p of config.proxies) {
+                if (!p.external) continue
+                const key = getHostKey(p.external)
+                dnsStatusMap[key] = {
+                    host: key,
+                    target: config.tldn || "bar.com",
+                    resolved: true,
+                    status: "ok",
+                    cname: config.tldn || "bar.com",
+                    ips: ["192.168.1.1"],
+                    provider_record_exists: true,
+                    message: `Resolves to 192.168.1.1 (CNAME -> ${config.tldn || "bar.com"})`
+                }
+            }
+            dnsStatusMap = { ...dnsStatusMap }
+            configSnackbarText = "Synced all proxy routes to Cloudflare"
+            configSnackbar.open()
+            return
+        }
+
+        const res = await fetch('/dns/sync', { method: 'POST' })
+        const data = await res.json()
+        if (res.ok && data.success) {
+            configSnackbarText = `Successfully synced ${data.synced_count} DNS records to Cloudflare`
+            configSnackbar.open()
+            await fetchDNSStatus()
+        } else {
+            configSnackbarText = `DNS Sync completed with ${data.error_count || 0} errors`
+            configSnackbar.open()
+        }
+    } catch (err) {
+        console.error("DNS sync failed:", err)
+        configSnackbarText = `DNS sync failed: ${err}`
+        configSnackbar.open()
+    } finally {
+        dnsSyncing = false
+    }
+}
+
+async function testDNSConnection() {
+    dnsTesting = true
+    dnsTestResult = null
+    try {
+        if (import.meta.env.DEV) {
+            dnsTestResult = {
+                success: true,
+                message: `Token verified successfully. Found Zone '${tldnInput || 'bar.com'}' (ID: dev-zone-12345)`
+            }
+            return
+        }
+
+        const res = await fetch('/dns/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                provider: config.dns?.provider,
+                api_token: config.dns?.api_token,
+                zone_id: config.dns?.zone_id,
+                tldn: tldnInput
+            })
+        })
+        const data = await res.json()
+        dnsTestResult = {
+            success: data.success,
+            message: data.message
+        }
+    } catch (err) {
+        dnsTestResult = {
+            success: false,
+            message: `Connection test failed: ${err}`
+        }
+    } finally {
+        dnsTesting = false
     }
 }
 
@@ -432,6 +674,7 @@ async function registerGithubAutomatically() {
                             <thead>
                                 <tr>
                                     <th>External Address (Domain)</th>
+                                    <th style="min-width: 170px;">DNS Status</th>
                                     <th>Internal Address (IP/Port)</th>
                                     <th style="width: 60px;"></th>
                                     <th style="width: 60px;"></th>
@@ -439,9 +682,49 @@ async function registerGithubAutomatically() {
                             </thead>
                             <tbody>
                                 {#each config.proxies as proxy, i}
+                                {@const hostKey = getHostKey(proxy.external)}
+                                {@const dnsInfo = dnsStatusMap[hostKey]}
                                 <tr class="proxy-row">
                                     <td>
                                         <input type="text" class="proxy-input" bind:value={proxy.external} placeholder="e.g. app.hardie.dev" />
+                                    </td>
+                                    <td class="dns-cell">
+                                        {#if !proxy.external}
+                                            <span class="dns-chip empty">—</span>
+                                        {:else if dnsChecking && !dnsInfo}
+                                            <span class="dns-chip loading">
+                                                <span class="material-icons spin">sync</span> Checking
+                                            </span>
+                                        {:else if dnsInfo?.resolved}
+                                            <span class="dns-chip ok" title={dnsInfo.message}>
+                                                <span class="material-icons">check_circle</span> Configured
+                                            </span>
+                                        {:else if dnsInfo?.provider_record_exists}
+                                            <span class="dns-chip pending" title={dnsInfo.message}>
+                                                <span class="material-icons">schedule</span> Propagating
+                                            </span>
+                                        {:else}
+                                            <div class="dns-action-group">
+                                                <span class="dns-chip missing" title={dnsInfo?.message || "DNS record missing (NXDOMAIN)"}>
+                                                    <span class="material-icons">warning</span> Missing
+                                                </span>
+                                                {#if config.dns?.provider === 'cloudflare'}
+                                                    <button
+                                                        type="button"
+                                                        class="btn-resolve"
+                                                        disabled={dnsResolvingHost[proxy.external]}
+                                                        on:click={() => createDNSRecord(proxy.external)}
+                                                        title={`Create Cloudflare CNAME record ${hostKey} -> ${config.dns?.target || tldnInput || 'target'}`}
+                                                    >
+                                                        {#if dnsResolvingHost[proxy.external]}
+                                                            <span class="material-icons spin">sync</span>
+                                                        {:else}
+                                                            <span class="material-icons">add_link</span> Resolve
+                                                        {/if}
+                                                    </button>
+                                                {/if}
+                                            </div>
+                                        {/if}
                                     </td>
                                     <td>
                                         <input type="text" class="proxy-input" bind:value={proxy.internal} placeholder="e.g. http://localhost:8080" />
@@ -459,12 +742,22 @@ async function registerGithubAutomatically() {
                                 </tr>
                                 {/each}
                                 <tr class="add-row">
-                                    <td colspan="2">
+                                    <td colspan="3">
                                         <div class="action-bar">
                                             <button class="btn-success btn-icon-group" on:click={saveConfig}>
                                                 <span class="material-icons">save</span>
                                                 <span>Save Changes</span>
                                             </button>
+                                            <button class="btn-secondary btn-icon-group" on:click={fetchDNSStatus} disabled={dnsChecking}>
+                                                <span class="material-icons {dnsChecking ? 'spin' : ''}">refresh</span>
+                                                <span>Check DNS</span>
+                                            </button>
+                                            {#if missingDNSCount > 0 && config?.dns?.provider === 'cloudflare'}
+                                                <button class="btn-warning btn-icon-group" on:click={syncAllMissingDNS} disabled={dnsSyncing}>
+                                                    <span class="material-icons {dnsSyncing ? 'spin' : ''}">auto_fix_high</span>
+                                                    <span>Resolve All Missing ({missingDNSCount})</span>
+                                                </button>
+                                            {/if}
                                         </div>
                                     </td>
                                     <td></td>
@@ -484,12 +777,12 @@ async function registerGithubAutomatically() {
                         <h3>General Settings</h3>
                         <div class="input-row">
                             <div class="input-group-half">
-                                <label>TLD Domain Name</label>
-                                <input type="text" bind:value={tldnInput} placeholder="e.g. yourdomain.com" />
+                                <label for="tldn-settings">TLD Domain Name</label>
+                                <input id="tldn-settings" type="text" bind:value={tldnInput} placeholder="e.g. yourdomain.com" />
                             </div>
                             <div class="input-group-half">
-                                <label>Update Admin Password (Username: 'admin')</label>
-                                <input type="password" bind:value={newPassword} placeholder="New admin password" />
+                                <label for="admin-pass-settings">Update Admin Password (Username: 'admin')</label>
+                                <input id="admin-pass-settings" type="password" bind:value={newPassword} placeholder="New admin password" />
                             </div>
                         </div>
                         <div class="checkbox-group">
@@ -498,6 +791,92 @@ async function registerGithubAutomatically() {
                                 Bypass TLS verification for upstream backends (InsecureSkipVerify)
                             </label>
                         </div>
+                    </div>
+
+                    <!-- DNS PROVIDER INTEGRATION SECTION -->
+                    <div class="settings-section">
+                        <div class="section-title-row">
+                            <h3>🌐 DNS Provider Integration</h3>
+                            {#if config.dns && config.dns.provider === 'cloudflare'}
+                                <span class="badge-tag">Cloudflare Active</span>
+                            {/if}
+                        </div>
+                        <p class="section-desc">Automatically create and verify CNAME records (e.g. <code>newapp.hardie.dev &rarr; hardie.dev</code>) in your DNS provider when proxy routes are added.</p>
+
+                        {#if config.dns}
+                            <div class="input-row">
+                                <div class="input-group-half">
+                                    <label for="dns-prov-select">DNS Provider</label>
+                                    <select id="dns-prov-select" bind:value={config.dns.provider}>
+                                        <option value="none">Disabled / Manual DNS</option>
+                                        <option value="cloudflare">Cloudflare DNS API</option>
+                                    </select>
+                                </div>
+                                <div class="input-group-half">
+                                    <label for="dns-target-input">CNAME Target Domain</label>
+                                    <input id="dns-target-input" type="text" bind:value={config.dns.target} placeholder={`Defaults to TLDN (${tldnInput || 'yourdomain.com'})`} />
+                                </div>
+                            </div>
+
+                            {#if config.dns.provider === 'cloudflare'}
+                                <div class="cf-config-box">
+                                    <div class="input-group">
+                                        <label for="cf-token-input">
+                                            Cloudflare API Token
+                                            <span class="helper-badge">Required Permissions: Zone.DNS (Edit), Zone.Zone (Read)</span>
+                                        </label>
+                                        <div class="password-input-wrap">
+                                            {#if showApiToken}
+                                                <input id="cf-token-input" type="text" bind:value={config.dns.api_token} placeholder="Paste Cloudflare API Bearer Token" />
+                                            {:else}
+                                                <input id="cf-token-input" type="password" bind:value={config.dns.api_token} placeholder="Paste Cloudflare API Bearer Token" />
+                                            {/if}
+                                            <button type="button" class="btn-toggle-vis" on:click={() => showApiToken = !showApiToken} aria-label="Toggle token visibility">
+                                                <span class="material-icons">{showApiToken ? 'visibility_off' : 'visibility'}</span>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div class="input-row">
+                                        <div class="input-group-half">
+                                            <label for="cf-zone-id-input">Zone ID (Optional)</label>
+                                            <input id="cf-zone-id-input" type="text" bind:value={config.dns.zone_id} placeholder={`Auto-discovered for ${tldnInput || 'TLDN'}`} />
+                                        </div>
+                                        <div class="input-group-half checkbox-stack">
+                                            <label class="toggle-label">
+                                                <input type="checkbox" bind:checked={config.dns.proxied} />
+                                                <span>Enable Cloudflare Proxy (Orange Cloud / CDN / WAF)</span>
+                                            </label>
+                                            <label class="toggle-label">
+                                                <input type="checkbox" bind:checked={config.dns.auto_sync} />
+                                                <span>Auto-create CNAME when saving new proxy routes</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="dns-action-row">
+                                        <button class="btn-primary btn-icon-group" on:click={testDNSConnection} disabled={dnsTesting || !config.dns.api_token}>
+                                            <span class="material-icons {dnsTesting ? 'spin' : ''}">network_check</span>
+                                            <span>{dnsTesting ? 'Testing Connection...' : 'Test Cloudflare Connection'}</span>
+                                        </button>
+                                        <button class="btn-secondary btn-icon-group" on:click={syncAllMissingDNS} disabled={dnsSyncing || !config.dns.api_token}>
+                                            <span class="material-icons {dnsSyncing ? 'spin' : ''}">sync</span>
+                                            <span>{dnsSyncing ? 'Syncing Routes...' : 'Sync All Routes to Cloudflare'}</span>
+                                        </button>
+                                    </div>
+
+                                    {#if dnsTestResult}
+                                        <div class="dns-test-alert {dnsTestResult.success ? 'success' : 'error'}">
+                                            <span class="material-icons">{dnsTestResult.success ? 'check_circle' : 'error'}</span>
+                                            <div class="test-msg-body">
+                                                <strong>{dnsTestResult.success ? 'Connection Successful' : 'Connection Error'}</strong>
+                                                <p>{dnsTestResult.message}</p>
+                                            </div>
+                                        </div>
+                                    {/if}
+                                </div>
+                            {/if}
+                        {/if}
                     </div>
 
                     <div class="settings-section">
@@ -522,8 +901,6 @@ async function registerGithubAutomatically() {
                                 <button class="btn-success" on:click={registerGithubAutomatically} disabled={!tldnInput}>
                                     ⚡ Register Automatically
                                 </button>
-                                
-
                             </div>
                         {/if}
 
@@ -539,33 +916,33 @@ async function registerGithubAutomatically() {
                                         
                                         <div class="input-row">
                                             <div class="input-group-half">
-                                                <label>Client ID</label>
-                                                <input type="text" bind:value={config.oauth_providers[provId].client_id} />
+                                                <label for={`client-id-${provId}`}>Client ID</label>
+                                                <input id={`client-id-${provId}`} type="text" bind:value={config.oauth_providers[provId].client_id} />
                                             </div>
                                             <div class="input-group-half">
-                                                <label>Client Secret</label>
-                                                <input type="password" bind:value={config.oauth_providers[provId].client_secret} placeholder="••••••••••••••••" />
+                                                <label for={`client-secret-${provId}`}>Client Secret</label>
+                                                <input id={`client-secret-${provId}`} type="password" bind:value={config.oauth_providers[provId].client_secret} placeholder="••••••••••••••••" />
                                             </div>
                                         </div>
 
                                         <div class="input-group">
-                                            <label>Redirect Callback URL</label>
-                                            <input type="text" readonly value={`https://${config.tldn || 'yourdomain.com'}/pylon/callback/${provId}`} class="readonly-input" />
+                                            <label for={`redirect-url-${provId}`}>Redirect Callback URL</label>
+                                            <input id={`redirect-url-${provId}`} type="text" readonly value={`https://${config.tldn || 'yourdomain.com'}/pylon/callback/${provId}`} class="readonly-input" />
                                         </div>
 
                                         {#if prov.type === 'oidc'}
                                             <div class="input-row">
                                                 <div class="input-group-third">
-                                                    <label>Auth URL</label>
-                                                    <input type="text" bind:value={config.oauth_providers[provId].auth_url} />
+                                                    <label for={`auth-url-${provId}`}>Auth URL</label>
+                                                    <input id={`auth-url-${provId}`} type="text" bind:value={config.oauth_providers[provId].auth_url} />
                                                 </div>
                                                 <div class="input-group-third">
-                                                    <label>Token URL</label>
-                                                    <input type="text" bind:value={config.oauth_providers[provId].token_url} />
+                                                    <label for={`token-url-${provId}`}>Token URL</label>
+                                                    <input id={`token-url-${provId}`} type="text" bind:value={config.oauth_providers[provId].token_url} />
                                                 </div>
                                                 <div class="input-group-third">
-                                                    <label>UserInfo URL</label>
-                                                    <input type="text" bind:value={config.oauth_providers[provId].user_info_url} />
+                                                    <label for={`user-info-${provId}`}>UserInfo URL</label>
+                                                    <input id={`user-info-${provId}`} type="text" bind:value={config.oauth_providers[provId].user_info_url} />
                                                 </div>
                                             </div>
                                         {/if}
@@ -1303,5 +1680,279 @@ async function registerGithubAutomatically() {
         font-size: 13.5px;
         color: #a7f3d0;
         line-height: 1.5;
+    }
+
+    /* DNS Status & Integration Styles */
+    .dns-cell {
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+
+    .dns-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 20px;
+        letter-spacing: 0.02em;
+    }
+
+    .dns-chip span.material-icons {
+        font-size: 16px;
+    }
+
+    .dns-chip.ok {
+        background: rgba(16, 185, 129, 0.12);
+        color: #10b981;
+        border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+
+    .dns-chip.missing {
+        background: rgba(245, 158, 11, 0.12);
+        color: #f59e0b;
+        border: 1px solid rgba(245, 158, 11, 0.25);
+    }
+
+    .dns-chip.pending {
+        background: rgba(129, 140, 248, 0.12);
+        color: #818cf8;
+        border: 1px solid rgba(129, 140, 248, 0.25);
+    }
+
+    .dns-chip.loading {
+        background: var(--card-header-bg);
+        color: var(--helper-text);
+        border: 1px solid var(--card-border);
+    }
+
+    .dns-chip.empty {
+        color: var(--step-inactive);
+        font-weight: normal;
+    }
+
+    .dns-action-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .btn-resolve {
+        background: linear-gradient(135deg, #0284c7, #4f46e5);
+        color: #ffffff;
+        border: none;
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        font-family: inherit;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        transition: filter 0.2s, transform 0.1s;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .btn-resolve:hover:not(:disabled) {
+        filter: brightness(1.15);
+        transform: translateY(-1px);
+    }
+
+    .btn-resolve:active:not(:disabled) {
+        transform: translateY(0);
+    }
+
+    .btn-resolve:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+
+    .btn-resolve span.material-icons {
+        font-size: 15px;
+    }
+
+    .btn-warning {
+        background-color: #f59e0b;
+        color: #0f172a;
+        font-family: inherit;
+        font-weight: 600;
+        font-size: 14px;
+        padding: 10px 24px;
+        border-radius: 10px;
+        cursor: pointer;
+        border: none;
+        transition: filter 0.2s, transform 0.1s;
+    }
+
+    .btn-warning:hover:not(:disabled) {
+        filter: brightness(1.1);
+    }
+
+    .btn-warning:disabled {
+        background-color: var(--tab-btn-bg);
+        color: var(--step-inactive);
+        cursor: not-allowed;
+    }
+
+    .section-title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--divider);
+        padding-bottom: 12px;
+        margin-bottom: 8px;
+    }
+
+    .section-title-row h3 {
+        margin: 0;
+        border-bottom: none;
+        padding-bottom: 0;
+    }
+
+    .badge-tag {
+        background: rgba(56, 189, 248, 0.15);
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.3);
+        border-radius: 20px;
+        padding: 3px 10px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .section-desc {
+        font-size: 13.5px;
+        color: var(--helper-text);
+        margin-top: 0;
+        margin-bottom: 24px;
+        line-height: 1.5;
+    }
+
+    .section-desc code {
+        background-color: var(--code-bg);
+        color: var(--code-text);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: monospace;
+    }
+
+    .cf-config-box {
+        margin-top: 24px;
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 14px;
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+    }
+
+    .helper-badge {
+        font-size: 11px;
+        font-weight: 500;
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.1);
+        padding: 2px 8px;
+        border-radius: 6px;
+        margin-left: 8px;
+    }
+
+    .password-input-wrap {
+        position: relative;
+        display: flex;
+        align-items: center;
+    }
+
+    .password-input-wrap input {
+        width: 100%;
+        padding-right: 44px;
+    }
+
+    .btn-toggle-vis {
+        position: absolute;
+        right: 8px;
+        background: transparent;
+        border: none;
+        color: var(--helper-text);
+        cursor: pointer;
+        padding: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+    }
+
+    .btn-toggle-vis:hover {
+        color: var(--text-main);
+    }
+
+    .checkbox-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        justify-content: center;
+    }
+
+    .toggle-label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13.5px;
+        color: var(--helper-text);
+        cursor: pointer;
+        user-select: none;
+    }
+
+    .toggle-label input {
+        width: 16px;
+        height: 16px;
+        accent-color: #38bdf8;
+        cursor: pointer;
+    }
+
+    .dns-action-row {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+    }
+
+    .dns-test-alert {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        padding: 16px 20px;
+        border-radius: 12px;
+        font-size: 13.5px;
+        line-height: 1.5;
+    }
+
+    .dns-test-alert.success {
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        color: #10b981;
+    }
+
+    .dns-test-alert.error {
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid rgba(239, 68, 68, 0.3);
+        color: #ef4444;
+    }
+
+    .test-msg-body p {
+        margin: 4px 0 0 0;
+        color: var(--text-main);
+        font-size: 13px;
+    }
+
+    .spin {
+        animation: spin 1s linear infinite;
+        display: inline-block;
+    }
+
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
     }
 </style>
