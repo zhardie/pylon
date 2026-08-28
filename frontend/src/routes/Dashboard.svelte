@@ -32,14 +32,14 @@ onMount(async () => {
 
   if (import.meta.env.DEV) {
     appItems = [
-      { name: "Grafana", external: "grafana.hardie.dev", url: "https://grafana.hardie.dev", icon: "insights", description: "Monitoring" },
-      { name: "Home Assistant", external: "hass.hardie.dev", url: "https://hass.hardie.dev", icon: "home", description: "Smart Home" },
-      { name: "Jellyfin", external: "jellyfin.hardie.dev", url: "https://jellyfin.hardie.dev", icon: "movie", description: "Media" },
-      { name: "Vaultwarden", external: "vault.hardie.dev", url: "https://vault.hardie.dev", icon: "lock", description: "Security" },
-      { name: "Nextcloud", external: "drive.hardie.dev", url: "https://drive.hardie.dev", icon: "cloud", description: "Cloud Storage" },
-      { name: "GitLab", external: "git.hardie.dev", url: "https://git.hardie.dev", icon: "code", description: "Development" },
-      { name: "Portainer", external: "docker.hardie.dev", url: "https://docker.hardie.dev", icon: "layers", description: "Infrastructure" },
-      { name: "Uptime Kuma", external: "status.hardie.dev", url: "https://status.hardie.dev", icon: "query_stats", description: "Status" }
+      { name: "Grafana", external: "grafana.yourdomain.com", url: "https://grafana.yourdomain.com", icon: "insights", description: "Monitoring" },
+      { name: "Home Assistant", external: "hass.yourdomain.com", url: "https://hass.yourdomain.com", icon: "home", description: "Smart Home" },
+      { name: "Jellyfin", external: "jellyfin.yourdomain.com", url: "https://jellyfin.yourdomain.com", icon: "movie", description: "Media" },
+      { name: "Vaultwarden", external: "vault.yourdomain.com", url: "https://vault.yourdomain.com", icon: "lock", description: "Security" },
+      { name: "Nextcloud", external: "drive.yourdomain.com", url: "https://drive.yourdomain.com", icon: "cloud", description: "Cloud Storage" },
+      { name: "GitLab", external: "git.yourdomain.com", url: "https://git.yourdomain.com", icon: "code", description: "Development" },
+      { name: "Portainer", external: "docker.yourdomain.com", url: "https://docker.yourdomain.com", icon: "layers", description: "Infrastructure" },
+      { name: "Uptime Kuma", external: "status.yourdomain.com", url: "https://status.yourdomain.com", icon: "query_stats", description: "Status" }
     ]
     loading = false
     return

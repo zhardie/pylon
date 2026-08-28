@@ -50,7 +50,7 @@ This is especially useful if you want to run several services on a homelab witho
 
 Pylon can automatically configure DNS records whenever you add or edit proxy routes:
 
-- **Automated CNAME Creation**: Adding a new app (e.g. `newapp.hardie.dev`) automatically creates a CNAME record pointing to `hardie.dev` in Cloudflare.
+- **Automated CNAME Creation**: Adding a new app (e.g. `newapp.yourdomain.com`) automatically creates a CNAME record pointing to `yourdomain.com` in Cloudflare.
 - **DNS Health Check**: The admin dashboard verifies DNS resolution for all configured routes on load.
 - **One-Click Missing Record Resolution**: Warning indicators highlight missing DNS records with a one-click button to resolve them directly in Cloudflare.
 - **Batch DNS Sync**: Sync all configured proxy routes to Cloudflare in a single click.
@@ -64,7 +64,7 @@ Create a custom API token in the [Cloudflare Dashboard](https://dash.cloudflare.
 
 | Variable | Description |
 |---|---|
-| `PYLON_TLDN` | Primary top-level domain name (e.g. `hardie.dev`) |
+| `PYLON_TLDN` | Primary top-level domain name (e.g. `yourdomain.com`) |
 | `PYLON_ADMIN_PASSWORD` | Admin password for port 3001 basic auth |
 | `PYLON_SESSION_KEY` | Secret key used to sign session cookies |
 | `PYLON_DNS_PROVIDER` | DNS provider name (e.g. `cloudflare`, `none`) |

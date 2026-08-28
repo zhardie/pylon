@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount } from 'svelte'
+import { onMount, onDestroy } from 'svelte'
 import { onboarded } from '../stores.js'
 import IconButton from '@smui/icon-button'
 import Textfield from '@smui/textfield'
@@ -33,7 +33,7 @@ let newPassword = ""
 let selectedProviderType = "google"
 let tldnInput = ""
 
-// DNS State
+// DNS State & Live Poller
 let dnsStatusMap: { [host: string]: DNSCheckResult } = {}
 let dnsChecking = false
 let dnsConfigured = false
@@ -42,6 +42,16 @@ let dnsTestResult: { success?: boolean, message?: string } | null = null
 let dnsTesting = false
 let dnsSyncing = false
 let showApiToken = false
+let dnsPollTimer: any = null
+let dnsPollAttempts = 0
+const MAX_DNS_POLL_ATTEMPTS = 15
+
+onDestroy(() => {
+    if (dnsPollTimer) {
+        clearTimeout(dnsPollTimer)
+        dnsPollTimer = null
+    }
+})
 
 function getHostKey(rawHost: string): string {
     if (!rawHost) return ""
@@ -141,9 +151,11 @@ async function fetchConfig() {
     }
 }
 
-async function fetchDNSStatus() {
+async function fetchDNSStatus(isBackgroundPoll = false) {
     if (!config || !config.proxies) return
-    dnsChecking = true
+    if (!isBackgroundPoll) {
+        dnsChecking = true
+    }
     try {
         if (import.meta.env.DEV) {
             const mockMap: { [host: string]: DNSCheckResult } = {}
@@ -172,17 +184,38 @@ async function fetchDNSStatus() {
             const data = await res.json()
             dnsConfigured = data.configured
             const map: { [host: string]: DNSCheckResult } = {}
+            let hasPropagating = false
             if (data.results) {
                 for (const r of data.results) {
                     map[r.host] = r
+                    if (r.provider_record_exists && !r.resolved) {
+                        hasPropagating = true
+                    }
                 }
             }
             dnsStatusMap = map
+
+            // If any record exists in Cloudflare but hasn't resolved publicly yet, automatically re-poll every 2.5s
+            if (hasPropagating && dnsPollAttempts < MAX_DNS_POLL_ATTEMPTS) {
+                dnsPollAttempts++
+                if (dnsPollTimer) clearTimeout(dnsPollTimer)
+                dnsPollTimer = setTimeout(() => {
+                    fetchDNSStatus(true)
+                }, 2500)
+            } else {
+                dnsPollAttempts = 0
+                if (dnsPollTimer) {
+                    clearTimeout(dnsPollTimer)
+                    dnsPollTimer = null
+                }
+            }
         }
     } catch (err) {
         console.error("Failed to check DNS status:", err)
     } finally {
-        dnsChecking = false
+        if (!isBackgroundPoll) {
+            dnsChecking = false
+        }
     }
 }
 
@@ -208,6 +241,21 @@ async function createDNSRecord(rawHost: string) {
             return
         }
 
+        // Optimistically set provider_record_exists to show live feedback immediately
+        if (!dnsStatusMap[key]) {
+            dnsStatusMap[key] = {
+                host: key,
+                target: config.dns?.target || config.tldn || "",
+                resolved: false,
+                status: "pending",
+                provider_record_exists: true,
+                message: "Cloudflare CNAME created, waiting for DNS propagation..."
+            }
+        } else {
+            dnsStatusMap[key].provider_record_exists = true
+        }
+        dnsStatusMap = { ...dnsStatusMap }
+
         const res = await fetch('/dns/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -217,10 +265,12 @@ async function createDNSRecord(rawHost: string) {
         if (res.ok && data.success) {
             configSnackbarText = data.message || `Created CNAME for ${key}`
             configSnackbar.open()
+            dnsPollAttempts = 0
             await fetchDNSStatus()
         } else {
             configSnackbarText = `Error creating DNS record: ${data.message || 'Unknown error'}`
             configSnackbar.open()
+            await fetchDNSStatus()
         }
     } catch (err) {
         console.error("DNS record creation failed:", err)
@@ -687,7 +737,7 @@ async function registerGithubAutomatically() {
                                 {@const dnsInfo = dnsStatusMap[hostKey]}
                                 <tr class="proxy-row">
                                     <td>
-                                        <input type="text" class="proxy-input" bind:value={proxy.external} placeholder="e.g. app.hardie.dev" />
+                                        <input type="text" class="proxy-input" bind:value={proxy.external} placeholder={`e.g. app.${config.tldn || tldnInput || 'yourdomain.com'}`} />
                                     </td>
                                     <td class="dns-cell">
                                         {#if !proxy.external}
@@ -701,8 +751,8 @@ async function registerGithubAutomatically() {
                                                 <span class="material-icons">check_circle</span> Configured
                                             </span>
                                         {:else if dnsInfo?.provider_record_exists}
-                                            <span class="dns-chip pending" title={dnsInfo.message}>
-                                                <span class="material-icons">schedule</span> Propagating
+                                            <span class="dns-chip pending" title={dnsInfo.message || "Record created in Cloudflare, waiting for public DNS resolution..."}>
+                                                <span class="material-icons spin-slow">sync</span> Propagating
                                             </span>
                                         {:else}
                                             <div class="dns-action-group">
@@ -802,7 +852,7 @@ async function registerGithubAutomatically() {
                                 <span class="badge-tag">Cloudflare Active</span>
                             {/if}
                         </div>
-                        <p class="section-desc">Automatically create and verify CNAME records (e.g. <code>newapp.hardie.dev &rarr; hardie.dev</code>) in your DNS provider when proxy routes are added.</p>
+                        <p class="section-desc">Automatically create and verify CNAME records (e.g. <code>newapp.{config.tldn || tldnInput || 'yourdomain.com'} &rarr; {config.dns?.target || config.tldn || tldnInput || 'yourdomain.com'}</code>) in your DNS provider when proxy routes are added.</p>
 
                         {#if config.dns}
                             <div class="input-row">
@@ -815,7 +865,7 @@ async function registerGithubAutomatically() {
                                 </div>
                                 <div class="input-group-half">
                                     <label for="dns-target-input">CNAME Target Domain</label>
-                                    <input id="dns-target-input" type="text" bind:value={config.dns.target} placeholder={`Defaults to TLDN (${tldnInput || 'yourdomain.com'})`} />
+                                    <input id="dns-target-input" type="text" bind:value={config.dns.target} placeholder={`Defaults to TLDN (${config.tldn || tldnInput || 'yourdomain.com'})`} />
                                 </div>
                             </div>
 
@@ -848,7 +898,7 @@ async function registerGithubAutomatically() {
                                         </div>
                                         <div class="input-group-half">
                                             <label for="cf-zone-id-input">Zone ID (Optional)</label>
-                                            <input id="cf-zone-id-input" type="text" bind:value={config.dns.zone_id} placeholder={`Auto-discovered for ${tldnInput || 'TLDN'}`} />
+                                            <input id="cf-zone-id-input" type="text" bind:value={config.dns.zone_id} placeholder={`Auto-discovered for ${config.tldn || tldnInput || 'TLDN'}`} />
                                         </div>
                                     </div>
 
@@ -1959,6 +2009,11 @@ async function registerGithubAutomatically() {
 
     .spin {
         animation: spin 1s linear infinite;
+        display: inline-block;
+    }
+
+    .spin-slow {
+        animation: spin 2s linear infinite;
         display: inline-block;
     }
 
