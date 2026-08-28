@@ -819,6 +819,7 @@ func getEmailFromProvider(ctx context.Context, provType string, token *oauth2.To
 		}
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		req.Header.Set("User-Agent", "Pylon-Auth")
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -826,27 +827,66 @@ func getEmailFromProvider(ctx context.Context, provType string, token *oauth2.To
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("github api returned status %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusOK {
+			var emails []struct {
+				Email    string `json:"email"`
+				Primary  bool   `json:"primary"`
+				Verified bool   `json:"verified"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&emails); err == nil {
+				for _, e := range emails {
+					if e.Primary && e.Verified {
+						return e.Email, nil
+					}
+				}
+				for _, e := range emails {
+					if e.Verified {
+						return e.Email, nil
+					}
+				}
+				if len(emails) > 0 && emails[0].Email != "" {
+					return emails[0].Email, nil
+				}
+			}
+		} else {
+			respBody, _ := io.ReadAll(resp.Body)
+			log.Printf("GitHub /user/emails returned status %d: %s", resp.StatusCode, string(respBody))
 		}
 
-		var emails []struct {
-			Email    string `json:"email"`
-			Primary  bool   `json:"primary"`
-			Verified bool   `json:"verified"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&emails); err != nil {
+		// Fallback: try GET https://api.github.com/user
+		userReq, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user", nil)
+		if err != nil {
 			return "", err
 		}
-		for _, e := range emails {
-			if e.Primary && e.Verified {
-				return e.Email, nil
+		userReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		userReq.Header.Set("Accept", "application/vnd.github.v3+json")
+		userReq.Header.Set("User-Agent", "Pylon-Auth")
+
+		userResp, err := http.DefaultClient.Do(userReq)
+		if err != nil {
+			return "", err
+		}
+		defer userResp.Body.Close()
+
+		if userResp.StatusCode == http.StatusOK {
+			var userInfo struct {
+				Email string `json:"email"`
+				Login string `json:"login"`
 			}
+			if err := json.NewDecoder(userResp.Body).Decode(&userInfo); err == nil {
+				if userInfo.Email != "" {
+					return userInfo.Email, nil
+				}
+				if userInfo.Login != "" {
+					return fmt.Sprintf("%s@users.noreply.github.com", userInfo.Login), nil
+				}
+			}
+		} else {
+			respBody, _ := io.ReadAll(userResp.Body)
+			log.Printf("GitHub /user returned status %d: %s", userResp.StatusCode, string(respBody))
 		}
-		if len(emails) > 0 {
-			return emails[0].Email, nil // Fallback to first address if primary is missing
-		}
-		return "", errors.New("no emails found for Github user")
+
+		return "", fmt.Errorf("github api returned status %d", resp.StatusCode)
 
 	case "microsoft":
 		idToken, ok := token.Extra("id_token").(string)
@@ -2348,6 +2388,7 @@ func githubRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("User-Agent", "Pylon-Auth")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
