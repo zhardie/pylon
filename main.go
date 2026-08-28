@@ -787,11 +787,11 @@ func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if referer == "" || referer == "/pylon/login" || referer == "/pylon" || referer == "/pylon/apps" {
-		targetDomain := tldn
-		if targetDomain == "" {
-			targetDomain = r.Host
+		targetHost := "apps." + tldn
+		if tldn == "" {
+			targetHost = r.Host
 		}
-		http.Redirect(w, r, fmt.Sprintf("https://%s/pylon/apps", targetDomain), http.StatusFound)
+		http.Redirect(w, r, fmt.Sprintf("https://%s/", targetHost), http.StatusFound)
 		return
 	}
 
@@ -2402,8 +2402,12 @@ func githubRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	// Reload config in memory
 	_ = loadConfig()
 
-	// Redirect back to admin console
-	http.Redirect(w, r, "http://"+tldn+":3001/#/", http.StatusFound)
+	// Redirect to user portal
+	targetHost := "apps." + tldn
+	if tldn == "" {
+		targetHost = r.Host
+	}
+	http.Redirect(w, r, fmt.Sprintf("https://%s/", targetHost), http.StatusFound)
 }
 
 

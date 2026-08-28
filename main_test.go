@@ -358,3 +358,16 @@ func TestDedicatedAppsDomain(t *testing.T) {
 	}
 }
 
+func TestGitHubRegisterHandler_MissingCode(t *testing.T) {
+	setupTestConfig()
+
+	req := httptest.NewRequest("GET", "https://example.com/pylon/github/register", nil)
+	rec := httptest.NewRecorder()
+	githubRegisterHandler(rec, req)
+
+	if rec.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for missing code, got %d", rec.Result().StatusCode)
+	}
+}
+
+
