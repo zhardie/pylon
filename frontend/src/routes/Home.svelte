@@ -196,7 +196,7 @@ async function registerGithubAutomatically() {
         callback_urls: [`https://${domain}/pylon/callback/github`],
         public: false,
         default_permissions: {
-            email_addresses: "read"
+            emails: "read"
         },
         default_events: []
     }
