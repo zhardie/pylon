@@ -230,6 +230,11 @@ func loadConfig() error {
 	} else if os.Getenv("PYLON_DNS_API_TOKEN") != "" {
 		conf.DNS.APIToken = os.Getenv("PYLON_DNS_API_TOKEN")
 	}
+	if os.Getenv("PYLON_CLOUDFLARE_EMAIL") != "" {
+		conf.DNS.AccountEmail = os.Getenv("PYLON_CLOUDFLARE_EMAIL")
+	} else if os.Getenv("PYLON_DNS_EMAIL") != "" {
+		conf.DNS.AccountEmail = os.Getenv("PYLON_DNS_EMAIL")
+	}
 	if os.Getenv("PYLON_CLOUDFLARE_ZONE_ID") != "" {
 		conf.DNS.ZoneID = os.Getenv("PYLON_CLOUDFLARE_ZONE_ID")
 	} else if os.Getenv("PYLON_DNS_ZONE_ID") != "" {

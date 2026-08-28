@@ -292,6 +292,7 @@ async function testDNSConnection() {
             body: JSON.stringify({
                 provider: config.dns?.provider,
                 api_token: config.dns?.api_token,
+                account_email: config.dns?.account_email,
                 zone_id: config.dns?.zone_id,
                 tldn: tldnInput
             })
@@ -839,10 +840,20 @@ async function registerGithubAutomatically() {
 
                                     <div class="input-row">
                                         <div class="input-group-half">
+                                            <label for="cf-email-input">
+                                                Cloudflare Account Email (Optional)
+                                                <span class="helper-badge">Only needed if using Global API Key</span>
+                                            </label>
+                                            <input id="cf-email-input" type="email" bind:value={config.dns.account_email} placeholder="e.g. you@domain.com" />
+                                        </div>
+                                        <div class="input-group-half">
                                             <label for="cf-zone-id-input">Zone ID (Optional)</label>
                                             <input id="cf-zone-id-input" type="text" bind:value={config.dns.zone_id} placeholder={`Auto-discovered for ${tldnInput || 'TLDN'}`} />
                                         </div>
-                                        <div class="input-group-half checkbox-stack">
+                                    </div>
+
+                                    <div class="input-row">
+                                        <div class="input-group-full checkbox-stack">
                                             <label class="toggle-label">
                                                 <input type="checkbox" bind:checked={config.dns.proxied} />
                                                 <span>Enable Cloudflare Proxy (Orange Cloud / CDN / WAF)</span>

@@ -13,20 +13,29 @@ import (
 
 // CloudflareProvider implements DNSProvider for Cloudflare.
 type CloudflareProvider struct {
-	APIToken string
-	ZoneID   string
-	TLDN     string
-	BaseURL  string // defaults to https://api.cloudflare.com/client/v4
-	Client   *http.Client
+	APIToken     string
+	AccountEmail string
+	ZoneID       string
+	TLDN         string
+	BaseURL      string // defaults to https://api.cloudflare.com/client/v4
+	Client       *http.Client
 }
 
 // NewCloudflareProvider creates a new Cloudflare DNS provider instance.
-func NewCloudflareProvider(apiToken, zoneID, tldn string) *CloudflareProvider {
+func NewCloudflareProvider(apiToken, accountEmail, zoneID, tldn string) *CloudflareProvider {
+	cleanToken := strings.TrimSpace(apiToken)
+	cleanToken = strings.Trim(cleanToken, `"'`+"`")
+	if strings.HasPrefix(strings.ToLower(cleanToken), "bearer ") {
+		cleanToken = strings.TrimSpace(cleanToken[7:])
+	}
+	cleanToken = strings.Trim(cleanToken, `"'`+"`")
+
 	return &CloudflareProvider{
-		APIToken: strings.TrimSpace(apiToken),
-		ZoneID:   strings.TrimSpace(zoneID),
-		TLDN:     strings.TrimSpace(tldn),
-		BaseURL:  "https://api.cloudflare.com/client/v4",
+		APIToken:     cleanToken,
+		AccountEmail: strings.TrimSpace(accountEmail),
+		ZoneID:       strings.TrimSpace(zoneID),
+		TLDN:         strings.TrimSpace(tldn),
+		BaseURL:      "https://api.cloudflare.com/client/v4",
 		Client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -83,7 +92,12 @@ func (cf *CloudflareProvider) doRequest(ctx context.Context, method, endpoint st
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+cf.APIToken)
+	if cf.AccountEmail != "" {
+		req.Header.Set("X-Auth-Key", cf.APIToken)
+		req.Header.Set("X-Auth-Email", cf.AccountEmail)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+cf.APIToken)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Pylon-Reverse-Proxy/1.0")
 
@@ -123,26 +137,52 @@ func (cf *CloudflareProvider) TestConnection(ctx context.Context) (string, error
 		return "", fmt.Errorf("api_token is empty")
 	}
 
-	// 1. Verify token status
-	_, err := cf.doRequest(ctx, "GET", "/user/tokens/verify", nil)
-	if err != nil {
-		return "", fmt.Errorf("token verification failed: %w", err)
+	// 1. If no account email is set, try standard Bearer token verification
+	if cf.AccountEmail == "" {
+		_, err := cf.doRequest(ctx, "GET", "/user/tokens/verify", nil)
+		if err == nil {
+			if cf.ZoneID != "" {
+				return fmt.Sprintf("API Token verified successfully. Using configured Zone ID: %s", cf.ZoneID), nil
+			}
+			if cf.TLDN != "" {
+				zoneID, err := cf.GetZoneID(ctx, cf.TLDN)
+				if err != nil {
+					return "", fmt.Errorf("API Token is active, but failed to find Zone for %q: %w", cf.TLDN, err)
+				}
+				return fmt.Sprintf("API Token verified successfully! Found Zone %q (ID: %s)", cf.TLDN, zoneID), nil
+			}
+			return "API Token is valid and active", nil
+		}
+
+		// 2. Fallback: If /user/tokens/verify fails, try direct zone discovery.
+		// Tokens scoped exclusively to a Zone (e.g. Zone.DNS Edit) may not have permission to read /user/tokens/verify.
+		if cf.TLDN != "" {
+			zoneID, zoneErr := cf.GetZoneID(ctx, cf.TLDN)
+			if zoneErr == nil && zoneID != "" {
+				return fmt.Sprintf("Token verified successfully! Connected to Zone %q (ID: %s)", cf.TLDN, zoneID), nil
+			}
+		}
+
+		return "", fmt.Errorf("token verification failed: %w. (Tip: If using a Global API Key instead of an API Token, please configure Account Email. If using an API Token, ensure it was created from https://dash.cloudflare.com/profile/api-tokens with 'Zone - DNS - Edit' and 'Zone - Zone - Read' permissions)", err)
 	}
 
-	// 2. Resolve Zone ID if TLDN is provided
-	if cf.ZoneID != "" {
-		return fmt.Sprintf("Token verified successfully. Using configured Zone ID: %s", cf.ZoneID), nil
-	}
-
+	// 3. Global API Key + Email Verification
 	if cf.TLDN != "" {
 		zoneID, err := cf.GetZoneID(ctx, cf.TLDN)
 		if err != nil {
-			return "", fmt.Errorf("token is valid, but failed to find Zone for %q: %w", cf.TLDN, err)
+			return "", fmt.Errorf("Global API Key authentication failed for Zone %q: %w", cf.TLDN, err)
 		}
-		return fmt.Sprintf("Token verified successfully. Found Zone %q (ID: %s)", cf.TLDN, zoneID), nil
+		return fmt.Sprintf("Global API Key verified successfully! Connected to Zone %q (ID: %s)", cf.TLDN, zoneID), nil
 	}
 
-	return "Token is valid and active", nil
+	resp, err := cf.doRequest(ctx, "GET", "/zones?status=active&per_page=1", nil)
+	if err != nil {
+		return "", fmt.Errorf("Global API Key authentication failed: %w", err)
+	}
+	if resp.Success {
+		return "Global API Key verified successfully", nil
+	}
+	return "", fmt.Errorf("authentication failed")
 }
 
 // GetZoneID discovers the Zone ID for a domain name or its parent zone.

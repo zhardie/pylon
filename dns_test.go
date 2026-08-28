@@ -175,7 +175,7 @@ func TestCloudflareProvider_MockAPI(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	provider := NewCloudflareProvider("valid-cf-token", "", "hardie.dev")
+	provider := NewCloudflareProvider("valid-cf-token", "", "", "hardie.dev")
 	provider.BaseURL = mockServer.URL
 	ctx := context.Background()
 
@@ -327,5 +327,45 @@ func TestCheckSingleHostDNS(t *testing.T) {
 	resMissing := CheckSingleHostDNS(ctx, "nonexistent-domain-xyz-123456789.invalid", "example.com", nil)
 	if resMissing.Resolved || resMissing.Status != "missing" {
 		t.Errorf("CheckSingleHostDNS for non-existent domain should be missing, got %+v", resMissing)
+	}
+}
+
+func TestCloudflareTokenSanitizationAndAuthHeaders(t *testing.T) {
+	// 1. Test Bearer prefix stripping and quotes trimming
+	cf1 := NewCloudflareProvider("  \"Bearer my-secret-token\"  ", "", "", "example.com")
+	if cf1.APIToken != "my-secret-token" {
+		t.Errorf("NewCloudflareProvider did not strip Bearer prefix and quotes: got %q, want 'my-secret-token'", cf1.APIToken)
+	}
+
+	cf2 := NewCloudflareProvider("`bearer  abc-123`", "", "", "example.com")
+	if cf2.APIToken != "abc-123" {
+		t.Errorf("NewCloudflareProvider did not strip lowercase bearer: got %q, want 'abc-123'", cf2.APIToken)
+	}
+
+	// 2. Test Global API Key Auth Headers
+	var receivedAuthKey, receivedAuthEmail string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthKey = r.Header.Get("X-Auth-Key")
+		receivedAuthEmail = r.Header.Get("X-Auth-Email")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"result":  []map[string]interface{}{{"id": "zone-global", "name": "example.com", "status": "active"}},
+		})
+	}))
+	defer mockServer.Close()
+
+	cfGlobal := NewCloudflareProvider("global-key-123", "user@example.com", "", "example.com")
+	cfGlobal.BaseURL = mockServer.URL
+
+	msg, err := cfGlobal.TestConnection(context.Background())
+	if err != nil {
+		t.Fatalf("Global API Key TestConnection failed: %v", err)
+	}
+	if !strings.Contains(msg, "zone-global") {
+		t.Errorf("Unexpected TestConnection message: %s", msg)
+	}
+	if receivedAuthKey != "global-key-123" || receivedAuthEmail != "user@example.com" {
+		t.Errorf("Expected X-Auth-Key and X-Auth-Email headers, got key=%q, email=%q", receivedAuthKey, receivedAuthEmail)
 	}
 }

@@ -15,12 +15,13 @@ import (
 
 // DNSConfig defines the configuration for DNS provider integrations.
 type DNSConfig struct {
-	Provider string `json:"provider"`            // e.g. "cloudflare", "none", ""
-	APIToken string `json:"api_token"`           // Provider API Token
-	ZoneID   string `json:"zone_id,omitempty"`   // Optional Zone ID override
-	Proxied  bool   `json:"proxied"`             // Enable Cloudflare Proxy / CDN (orange cloud)
-	Target   string `json:"target,omitempty"`    // CNAME target override (defaults to TLDN)
-	AutoSync bool   `json:"auto_sync"`           // Auto-create CNAME when saving new proxy routes
+	Provider     string `json:"provider"`                 // e.g. "cloudflare", "none", ""
+	APIToken     string `json:"api_token"`                // Provider API Token (or Global API Key)
+	AccountEmail string `json:"account_email,omitempty"`  // Account email (required if using Global API Key)
+	ZoneID       string `json:"zone_id,omitempty"`        // Optional Zone ID override
+	Proxied      bool   `json:"proxied"`                  // Enable Cloudflare Proxy / CDN (orange cloud)
+	Target       string `json:"target,omitempty"`         // CNAME target override (defaults to TLDN)
+	AutoSync     bool   `json:"auto_sync"`                // Auto-create CNAME when saving new proxy routes
 }
 
 // DNSRecord represents a DNS record retrieved or created via a DNS provider.
@@ -107,7 +108,7 @@ func GetDNSProvider(dnsCfg DNSConfig, tldn string) (DNSProvider, error) {
 		if strings.TrimSpace(dnsCfg.APIToken) == "" {
 			return nil, fmt.Errorf("cloudflare provider selected but api_token is empty")
 		}
-		return NewCloudflareProvider(dnsCfg.APIToken, dnsCfg.ZoneID, tldn), nil
+		return NewCloudflareProvider(dnsCfg.APIToken, dnsCfg.AccountEmail, dnsCfg.ZoneID, tldn), nil
 	case "", "none", "disabled":
 		return nil, nil
 	default:
@@ -427,10 +428,11 @@ func DNSSyncHandler(w http.ResponseWriter, r *http.Request) {
 
 // DNSTestRequest represents test parameters sent to verify DNS connectivity.
 type DNSTestRequest struct {
-	Provider string `json:"provider"`
-	APIToken string `json:"api_token"`
-	ZoneID   string `json:"zone_id,omitempty"`
-	TLDN     string `json:"tldn,omitempty"`
+	Provider     string `json:"provider"`
+	APIToken     string `json:"api_token"`
+	AccountEmail string `json:"account_email,omitempty"`
+	ZoneID       string `json:"zone_id,omitempty"`
+	TLDN         string `json:"tldn,omitempty"`
 }
 
 // DNSTestResponse represents the result of the DNS connection test.
@@ -467,6 +469,9 @@ func DNSTestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.APIToken != "" {
 		dnsCfg.APIToken = req.APIToken
+	}
+	if req.AccountEmail != "" {
+		dnsCfg.AccountEmail = req.AccountEmail
 	}
 	if req.ZoneID != "" {
 		dnsCfg.ZoneID = req.ZoneID
