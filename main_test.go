@@ -684,4 +684,35 @@ func TestLoginGateway_SingleProviderBypassAndLogout(t *testing.T) {
 	}
 }
 
+func TestOAuth2AuthHandler_PromptSelectAccount(t *testing.T) {
+	setupTestConfig()
+
+	cfgMu.Lock()
+	cfg.OAuthProviders = map[string]OAuthProvider{
+		"google": {
+			ID:          "google",
+			Name:        "Google",
+			Type:        "google",
+			ClientID:    "test-client-id",
+			RedirectURL: "https://example.com/pylon/callback/google",
+			Scopes:      []string{"email", "profile"},
+		},
+	}
+	cfgMu.Unlock()
+
+	req := httptest.NewRequest("GET", "https://example.com/pylon/auth/google", nil)
+	rec := httptest.NewRecorder()
+	oauth2authhandler(rec, req)
+
+	res := rec.Result()
+	if res.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 Temporary Redirect, got %d", res.StatusCode)
+	}
+
+	loc := res.Header.Get("Location")
+	if !strings.Contains(loc, "prompt=select_account") {
+		t.Errorf("expected prompt=select_account in Google OAuth URL, got %q", loc)
+	}
+}
+
 

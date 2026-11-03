@@ -749,7 +749,12 @@ func oauth2authhandler(w http.ResponseWriter, r *http.Request) {
 		Endpoint:     endpoint,
 	}
 
-	url := googleAuth.AuthCodeURL(state)
+	var authCodeOptions []oauth2.AuthCodeOption
+	if prov.Type == "google" || prov.Type == "microsoft" || prov.Type == "oidc" {
+		authCodeOptions = append(authCodeOptions, oauth2.SetAuthURLParam("prompt", "select_account"))
+	}
+
+	url := googleAuth.AuthCodeURL(state, authCodeOptions...)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
