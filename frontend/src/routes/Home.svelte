@@ -406,7 +406,7 @@ function addProvider() {
             break
         case "oidc":
             defaultName = "Custom OIDC"
-            defaultScopes = ["openid", "email"]
+            defaultScopes = ["openid", "email", "profile"]
             break
     }
     

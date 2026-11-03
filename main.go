@@ -97,6 +97,28 @@ type AppListResponse struct {
 	Items []AppItem `json:"items,omitempty"`
 }
 
+type UserClaims struct {
+	ID        string `json:"id"`
+	Email     string `json:"email"`
+	FirstName string `json:"first_name,omitempty"`
+	LastName  string `json:"last_name,omitempty"`
+	Name      string `json:"name,omitempty"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+}
+
+type ClaimsResponse struct {
+	Authenticated bool   `json:"authenticated"`
+	ID            string `json:"id,omitempty"`
+	Email         string `json:"email,omitempty"`
+	FirstName     string `json:"first_name,omitempty"`
+	LastName      string `json:"last_name,omitempty"`
+	Name          string `json:"name,omitempty"`
+	AvatarURL     string `json:"avatar_url,omitempty"`
+	Provider      string `json:"provider,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
 var (
 	cfgMu     sync.RWMutex
 	cfg       Config
@@ -473,6 +495,11 @@ func mainProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/pylon/claims" || r.URL.Path == "/pylon/claims/" || r.URL.Path == "/pylon/api/claims" {
+		claimsHandler(w, r)
+		return
+	}
+
 	if r.URL.Path == "/pylon/api/dns/status" {
 		DNSStatusHandler(w, r)
 		return
@@ -820,17 +847,29 @@ func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch user email based on provider rules
-	email, err := getEmailFromProvider(context.TODO(), prov.Type, tkn, prov.UserInfoURL)
+	// Fetch user claims based on provider rules
+	claims, err := getUserClaimsFromProvider(context.TODO(), prov.Type, tkn, prov.UserInfoURL)
 	if err != nil {
-		log.Print("Failed to retrieve email:", err)
-		http.Error(w, "Failed to retrieve verified email", http.StatusUnauthorized)
+		log.Print("Failed to retrieve user information:", err)
+		http.Error(w, "Failed to retrieve verified user information", http.StatusUnauthorized)
 		return
+	}
+	if claims.Provider == "" {
+		claims.Provider = prov.Type
+		if claims.Provider == "" {
+			claims.Provider = providerKey
+		}
 	}
 
 	sessionStore := getSessionStore()
 	session, _ := sessionStore.Get(r, "pylon")
-	session.Values["email"] = email
+	session.Values["email"] = claims.Email
+	session.Values["user_id"] = claims.ID
+	session.Values["first_name"] = claims.FirstName
+	session.Values["last_name"] = claims.LastName
+	session.Values["name"] = claims.Name
+	session.Values["avatar_url"] = claims.AvatarURL
+	session.Values["provider"] = claims.Provider
 	session.Options = &sessions.Options{
 		Path:     "/",
 		Domain:   tldn,
@@ -863,17 +902,32 @@ func oauth2callbackhandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getEmailFromProvider(ctx context.Context, provType string, token *oauth2.Token, userInfoURL string) (string, error) {
+	claims, err := getUserClaimsFromProvider(ctx, provType, token, userInfoURL)
+	if err != nil {
+		return "", err
+	}
+	return claims.Email, nil
+}
+
+func getUserClaimsFromProvider(ctx context.Context, provType string, token *oauth2.Token, userInfoURL string) (*UserClaims, error) {
 	switch provType {
 	case "google":
 		idToken, ok := token.Extra("id_token").(string)
 		if !ok {
-			return "", errors.New("missing id_token in Google OAuth response")
+			return nil, errors.New("missing id_token in Google OAuth response")
 		}
-		return emailFromIdToken(idToken)
-	case "github":
-		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user/emails", nil)
+		claims, err := claimsFromIdToken(idToken)
 		if err != nil {
-			return "", err
+			return nil, err
+		}
+		claims.Provider = "google"
+		normalizeClaims(claims)
+		return claims, nil
+
+	case "github":
+		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user", nil)
+		if err != nil {
+			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		req.Header.Set("Accept", "application/vnd.github.v3+json")
@@ -881,172 +935,285 @@ func getEmailFromProvider(ctx context.Context, provType string, token *oauth2.To
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode == http.StatusOK {
-			var emails []struct {
-				Email    string `json:"email"`
-				Primary  bool   `json:"primary"`
-				Verified bool   `json:"verified"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&emails); err == nil {
-				for _, e := range emails {
-					if e.Primary && e.Verified {
-						return e.Email, nil
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("github /user api returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		var userInfo struct {
+			ID        int64  `json:"id"`
+			Login     string `json:"login"`
+			Name      string `json:"name"`
+			Email     string `json:"email"`
+			AvatarURL string `json:"avatar_url"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+			return nil, err
+		}
+
+		email := userInfo.Email
+
+		// Query GitHub /user/emails for verified primary email if not public in profile
+		emailReq, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user/emails", nil)
+		if err == nil {
+			emailReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+			emailReq.Header.Set("Accept", "application/vnd.github.v3+json")
+			emailReq.Header.Set("User-Agent", "Pylon-Auth")
+
+			emailResp, err := http.DefaultClient.Do(emailReq)
+			if err == nil {
+				defer emailResp.Body.Close()
+				if emailResp.StatusCode == http.StatusOK {
+					var emails []struct {
+						Email    string `json:"email"`
+						Primary  bool   `json:"primary"`
+						Verified bool   `json:"verified"`
+					}
+					if err := json.NewDecoder(emailResp.Body).Decode(&emails); err == nil {
+						for _, e := range emails {
+							if e.Primary && e.Verified {
+								email = e.Email
+								break
+							}
+						}
+						if email == "" {
+							for _, e := range emails {
+								if e.Verified {
+									email = e.Email
+									break
+								}
+							}
+						}
+						if email == "" && len(emails) > 0 && emails[0].Email != "" {
+							email = emails[0].Email
+						}
 					}
 				}
-				for _, e := range emails {
-					if e.Verified {
-						return e.Email, nil
-					}
-				}
-				if len(emails) > 0 && emails[0].Email != "" {
-					return emails[0].Email, nil
-				}
 			}
+		}
+
+		if email == "" {
+			if userInfo.Login != "" {
+				email = fmt.Sprintf("%s@users.noreply.github.com", userInfo.Login)
+			} else {
+				return nil, errors.New("failed to retrieve verified email from github")
+			}
+		}
+
+		id := ""
+		if userInfo.ID > 0 {
+			id = fmt.Sprintf("%d", userInfo.ID)
 		} else {
-			respBody, _ := io.ReadAll(resp.Body)
-			log.Printf("GitHub /user/emails returned status %d: %s", resp.StatusCode, string(respBody))
+			id = userInfo.Login
 		}
 
-		// Fallback: try GET https://api.github.com/user
-		userReq, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user", nil)
-		if err != nil {
-			return "", err
-		}
-		userReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
-		userReq.Header.Set("Accept", "application/vnd.github.v3+json")
-		userReq.Header.Set("User-Agent", "Pylon-Auth")
-
-		userResp, err := http.DefaultClient.Do(userReq)
-		if err != nil {
-			return "", err
-		}
-		defer userResp.Body.Close()
-
-		if userResp.StatusCode == http.StatusOK {
-			var userInfo struct {
-				Email string `json:"email"`
-				Login string `json:"login"`
-			}
-			if err := json.NewDecoder(userResp.Body).Decode(&userInfo); err == nil {
-				if userInfo.Email != "" {
-					return userInfo.Email, nil
-				}
-				if userInfo.Login != "" {
-					return fmt.Sprintf("%s@users.noreply.github.com", userInfo.Login), nil
-				}
-			}
-		} else {
-			respBody, _ := io.ReadAll(userResp.Body)
-			log.Printf("GitHub /user returned status %d: %s", userResp.StatusCode, string(respBody))
+		displayName := userInfo.Name
+		if displayName == "" {
+			displayName = userInfo.Login
 		}
 
-		return "", fmt.Errorf("github api returned status %d", resp.StatusCode)
+		claims := &UserClaims{
+			ID:        id,
+			Email:     email,
+			Name:      displayName,
+			AvatarURL: userInfo.AvatarURL,
+			Provider:  "github",
+		}
+		normalizeClaims(claims)
+		return claims, nil
 
 	case "microsoft":
 		idToken, ok := token.Extra("id_token").(string)
 		if ok {
-			email, err := emailFromIdToken(idToken)
-			if err == nil && email != "" {
-				return email, nil
+			claims, err := claimsFromIdToken(idToken)
+			if err == nil && claims.Email != "" {
+				claims.Provider = "microsoft"
+				normalizeClaims(claims)
+				return claims, nil
 			}
 		}
 
 		// Fallback to Graph API Query
 		req, err := http.NewRequestWithContext(ctx, "GET", "https://graph.microsoft.com/v1.0/me", nil)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("microsoft graph API returned status %d", resp.StatusCode)
+			return nil, fmt.Errorf("microsoft graph API returned status %d", resp.StatusCode)
 		}
 
 		var info struct {
+			ID                string `json:"id"`
+			DisplayName       string `json:"displayName"`
+			GivenName         string `json:"givenName"`
+			Surname           string `json:"surname"`
 			Mail              string `json:"mail"`
 			UserPrincipalName string `json:"userPrincipalName"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-			return "", err
+			return nil, err
 		}
-		if info.Mail != "" {
-			return info.Mail, nil
+
+		email := info.Mail
+		if email == "" {
+			email = info.UserPrincipalName
 		}
-		return info.UserPrincipalName, nil
+		if email == "" {
+			return nil, errors.New("missing email in microsoft user response")
+		}
+
+		claims := &UserClaims{
+			ID:        info.ID,
+			Email:     email,
+			FirstName: info.GivenName,
+			LastName:  info.Surname,
+			Name:      info.DisplayName,
+			Provider:  "microsoft",
+		}
+		normalizeClaims(claims)
+		return claims, nil
 
 	case "gitlab":
 		req, err := http.NewRequestWithContext(ctx, "GET", "https://gitlab.com/api/v4/user", nil)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("gitlab api returned status %d", resp.StatusCode)
+			return nil, fmt.Errorf("gitlab api returned status %d", resp.StatusCode)
 		}
 
 		var info struct {
-			Email string `json:"email"`
+			ID        int64  `json:"id"`
+			Name      string `json:"name"`
+			Username  string `json:"username"`
+			Email     string `json:"email"`
+			AvatarURL string `json:"avatar_url"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-			return "", err
+			return nil, err
 		}
-		return info.Email, nil
+
+		if info.Email == "" {
+			return nil, errors.New("missing email in gitlab user response")
+		}
+
+		id := ""
+		if info.ID > 0 {
+			id = fmt.Sprintf("%d", info.ID)
+		} else {
+			id = info.Username
+		}
+
+		displayName := info.Name
+		if displayName == "" {
+			displayName = info.Username
+		}
+
+		claims := &UserClaims{
+			ID:        id,
+			Email:     info.Email,
+			Name:      displayName,
+			AvatarURL: info.AvatarURL,
+			Provider:  "gitlab",
+		}
+		normalizeClaims(claims)
+		return claims, nil
 
 	default: // oidc or custom
 		if userInfoURL == "" {
 			idToken, ok := token.Extra("id_token").(string)
 			if ok {
-				return emailFromIdToken(idToken)
+				claims, err := claimsFromIdToken(idToken)
+				if err == nil {
+					claims.Provider = provType
+					normalizeClaims(claims)
+					return claims, nil
+				}
 			}
-			return "", errors.New("missing userInfoURL for custom OIDC provider")
+			return nil, errors.New("missing userInfoURL for custom OIDC provider")
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", userInfoURL, nil)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("custom userInfo endpoint returned status %d", resp.StatusCode)
+			return nil, fmt.Errorf("custom userInfo endpoint returned status %d", resp.StatusCode)
 		}
 
 		var info struct {
-			Email string `json:"email"`
+			Sub               string `json:"sub"`
+			ID                string `json:"id"`
+			Email             string `json:"email"`
+			PreferredUsername string `json:"preferred_username"`
+			Name              string `json:"name"`
+			GivenName         string `json:"given_name"`
+			FamilyName        string `json:"family_name"`
+			Picture           string `json:"picture"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-			return "", err
+			return nil, err
 		}
-		return info.Email, nil
+
+		email := info.Email
+		if email == "" && info.PreferredUsername != "" && strings.Contains(info.PreferredUsername, "@") {
+			email = info.PreferredUsername
+		}
+		if email == "" {
+			return nil, errors.New("missing email in custom userInfo response")
+		}
+
+		id := info.Sub
+		if id == "" {
+			id = info.ID
+		}
+
+		claims := &UserClaims{
+			ID:        id,
+			Email:     email,
+			FirstName: info.GivenName,
+			LastName:  info.FamilyName,
+			Name:      info.Name,
+			AvatarURL: info.Picture,
+			Provider:  provType,
+		}
+		normalizeClaims(claims)
+		return claims, nil
 	}
 }
 
 func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	sessionStore := getSessionStore()
 	session, _ := sessionStore.Get(r, "pylon")
+	claims := getClaimsFromSession(session)
 	emailVal := session.Values["email"]
 
 	// Dedicated Apps / Dashboard Host or Builtin Handler
@@ -1093,10 +1260,17 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Strip untrusted incoming X-Pylon headers from the client
+	for k := range r.Header {
+		if strings.HasPrefix(strings.ToLower(k), "x-pylon-") {
+			r.Header.Del(k)
+		}
+	}
+
 	// Forward request via the pre-instantiated ReverseProxy
 	remoteAddr := strings.Split(r.RemoteAddr, ":")[0]
 
-    r.Header.Set("X-Forwarded-Host", r.Host)
+	r.Header.Set("X-Forwarded-Host", r.Host)
 	if r.TLS != nil {
 		r.Header.Set("X-Forwarded-Ssl", "on")
 		r.Header.Set("X-Forwarded-Proto", "https")
@@ -1107,6 +1281,35 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Header.Set("X-Forwarded-For", remoteAddr)
+
+	if claims != nil && claims.Email != "" {
+		if claims.ID != "" {
+			r.Header.Set("X-Pylon-User-Id", claims.ID)
+		}
+		if claims.Email != "" {
+			r.Header.Set("X-Pylon-User-Email", claims.Email)
+			r.Header.Set("X-Forwarded-User", claims.Email)
+			r.Header.Set("X-Forwarded-Email", claims.Email)
+		}
+		if claims.FirstName != "" {
+			r.Header.Set("X-Pylon-User-First-Name", claims.FirstName)
+		}
+		if claims.LastName != "" {
+			r.Header.Set("X-Pylon-User-Last-Name", claims.LastName)
+		}
+		if claims.Name != "" {
+			r.Header.Set("X-Pylon-User-Name", claims.Name)
+		}
+		if claims.AvatarURL != "" {
+			r.Header.Set("X-Pylon-User-Avatar", claims.AvatarURL)
+		}
+		if claims.Provider != "" {
+			r.Header.Set("X-Pylon-User-Provider", claims.Provider)
+		}
+	} else {
+		r.Header.Del("X-Forwarded-User")
+		r.Header.Del("X-Forwarded-Email")
+	}
 
 	pd.ReverseProxy.ServeHTTP(w, r)
 }
@@ -1441,6 +1644,98 @@ func appsAPIHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func claimsHandler(w http.ResponseWriter, r *http.Request) {
+	enableCORS(&w, r)
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+	sessionStore := getSessionStore()
+	session, _ := sessionStore.Get(r, "pylon")
+	claims := getClaimsFromSession(session)
+
+	if claims == nil || claims.Email == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(ClaimsResponse{
+			Authenticated: false,
+			Error:         "unauthorized",
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(ClaimsResponse{
+		Authenticated: true,
+		ID:            claims.ID,
+		Email:         claims.Email,
+		FirstName:     claims.FirstName,
+		LastName:      claims.LastName,
+		Name:          claims.Name,
+		AvatarURL:     claims.AvatarURL,
+		Provider:      claims.Provider,
+	})
+}
+
+func getClaimsFromSession(session *sessions.Session) *UserClaims {
+	if session == nil || session.Values == nil {
+		return nil
+	}
+	emailVal, ok := session.Values["email"].(string)
+	if !ok || emailVal == "" {
+		return nil
+	}
+	claims := &UserClaims{
+		Email: emailVal,
+	}
+	if id, ok := session.Values["user_id"].(string); ok {
+		claims.ID = id
+	}
+	if fn, ok := session.Values["first_name"].(string); ok {
+		claims.FirstName = fn
+	}
+	if ln, ok := session.Values["last_name"].(string); ok {
+		claims.LastName = ln
+	}
+	if name, ok := session.Values["name"].(string); ok {
+		claims.Name = name
+	}
+	if avatar, ok := session.Values["avatar_url"].(string); ok {
+		claims.AvatarURL = avatar
+	}
+	if prov, ok := session.Values["provider"].(string); ok {
+		claims.Provider = prov
+	}
+
+	normalizeClaims(claims)
+	return claims
+}
+
+func normalizeClaims(claims *UserClaims) {
+	if claims == nil {
+		return
+	}
+	if claims.ID == "" {
+		claims.ID = claims.Email
+	}
+	claims.FirstName = strings.TrimSpace(claims.FirstName)
+	claims.LastName = strings.TrimSpace(claims.LastName)
+	claims.Name = strings.TrimSpace(claims.Name)
+
+	if claims.FirstName == "" && claims.LastName == "" && claims.Name != "" {
+		parts := strings.SplitN(claims.Name, " ", 2)
+		claims.FirstName = parts[0]
+		if len(parts) > 1 {
+			claims.LastName = strings.TrimSpace(parts[1])
+		}
+	} else if claims.Name == "" && (claims.FirstName != "" || claims.LastName != "") {
+		claims.Name = strings.TrimSpace(claims.FirstName + " " + claims.LastName)
+	}
 }
 
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
@@ -2406,32 +2701,77 @@ func isValidRedirect(referer string, tldn string) bool {
 	return isAllowedDomain(host)
 }
 
-func emailFromIdToken(idToken string) (string, error) {
+func claimsFromIdToken(idToken string) (*UserClaims, error) {
 	jwt := strings.Split(idToken, ".")
 	if len(jwt) < 2 {
-		return "", errors.New("invalid jwt format")
+		return nil, errors.New("invalid jwt format")
 	}
-	jwtData := strings.TrimSuffix(jwt[1], "=")
+	jwtData := strings.TrimRight(jwt[1], "=")
 	b, err := base64.RawURLEncoding.DecodeString(jwtData)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	var email struct {
-		Email         string `json:"email"`
-		EmailVerified bool   `json:"email_verified"`
+	var payload struct {
+		Sub               string      `json:"sub"`
+		Oid               string      `json:"oid"`
+		Email             string      `json:"email"`
+		PreferredUsername string      `json:"preferred_username"`
+		EmailVerified     interface{} `json:"email_verified"`
+		Name              string      `json:"name"`
+		GivenName         string      `json:"given_name"`
+		FamilyName        string      `json:"family_name"`
+		Picture           string      `json:"picture"`
 	}
-	err = json.Unmarshal(b, &email)
+	err = json.Unmarshal(b, &payload)
+	if err != nil {
+		return nil, err
+	}
+
+	email := payload.Email
+	if email == "" && payload.PreferredUsername != "" && strings.Contains(payload.PreferredUsername, "@") {
+		email = payload.PreferredUsername
+	}
+	if email == "" {
+		return nil, errors.New("missing email in token payload")
+	}
+
+	if payload.EmailVerified != nil {
+		switch v := payload.EmailVerified.(type) {
+		case bool:
+			if !v {
+				return nil, fmt.Errorf("email %s not verified", email)
+			}
+		case string:
+			if strings.ToLower(v) == "false" {
+				return nil, fmt.Errorf("email %s not verified", email)
+			}
+		}
+	}
+
+	id := payload.Sub
+	if id == "" {
+		id = payload.Oid
+	}
+
+	claims := &UserClaims{
+		ID:        id,
+		Email:     email,
+		FirstName: payload.GivenName,
+		LastName:  payload.FamilyName,
+		Name:      payload.Name,
+		AvatarURL: payload.Picture,
+	}
+	normalizeClaims(claims)
+	return claims, nil
+}
+
+func emailFromIdToken(idToken string) (string, error) {
+	claims, err := claimsFromIdToken(idToken)
 	if err != nil {
 		return "", err
 	}
-	if email.Email == "" {
-		return "", errors.New("missing email in token payload")
-	}
-	if !email.EmailVerified {
-		return "", fmt.Errorf("email %s not verified", email.Email)
-	}
-	return email.Email, nil
+	return claims.Email, nil
 }
 
 func (pd *ProxyDetails) userInAllowedList(email string) bool {

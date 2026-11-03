@@ -10,6 +10,7 @@ This is especially useful if you want to run several services on a homelab witho
 - 🌐 **DNS Provider Integrations**: Automated CNAME provisioning and DNS resolution health checks via **Cloudflare DNS API**.
 - 🚀 **Admin Dashboard**: Web UI to manage routes, access controls, DNS status, and authentication settings in real time.
 - 📱 **User Portal**: Fast application dashboard for authorized users to access all allowed web services.
+- 👤 **Identity Forwarding & User Claims**: Protected SPAs and backend services can piggyback off Pylon auth via `/pylon/claims` or injected `X-Pylon-*` request headers.
 
 ## Prerequisites:
 
@@ -73,3 +74,41 @@ Create a custom API token in the [Cloudflare Dashboard](https://dash.cloudflare.
 | `PYLON_CLOUDFLARE_PROXIED` | Enable Cloudflare CDN proxy (`true` / `false`) |
 | `PYLON_DNS_TARGET` | CNAME target override (defaults to `PYLON_TLDN`) |
 | `PYLON_DNS_AUTO_SYNC` | Auto-create DNS records on save (`true` / `false`) |
+
+## App Identity & Claims (Piggybacking on Pylon Auth)
+
+Apps protected behind Pylon can easily access the identity of the signed-in user without running their own OAuth flows:
+
+### 1. Frontend SPAs (`GET /pylon/claims`)
+Client-side apps on any protected subdomain can make a same-origin `fetch('/pylon/claims')`. Because the session cookie is scoped to your root domain, the browser automatically attaches it:
+
+```javascript
+const res = await fetch('/pylon/claims');
+if (res.ok) {
+    const user = await res.json();
+    console.log(user);
+    // {
+    //   "authenticated": true,
+    //   "id": "109283746528192847",
+    //   "email": "user@example.com",
+    //   "first_name": "Jane",
+    //   "last_name": "Doe",
+    //   "name": "Jane Doe",
+    //   "provider": "google"
+    // }
+}
+```
+If the user is not authenticated, `/pylon/claims` returns HTTP `401 Unauthorized` with `{"authenticated": false, "error": "unauthorized"}`.
+
+### 2. Upstream Backend Headers
+When Pylon proxies requests to internal services, it strips untrusted client headers and automatically injects verified user identity headers:
+
+- `X-Pylon-User-Id`: Immutable user identifier from the auth provider (e.g., Google sub, GitHub numerical ID, Microsoft GUID)
+- `X-Pylon-User-Email`: User email address
+- `X-Pylon-User-First-Name`: First / given name
+- `X-Pylon-User-Last-Name`: Last / family name
+- `X-Pylon-User-Name`: Full display name
+- `X-Pylon-User-Avatar`: Avatar URL (if provided)
+- `X-Pylon-User-Provider`: Identity provider type (e.g., `google`, `github`, `microsoft`, `gitlab`, `oidc`)
+- `X-Forwarded-User` & `X-Forwarded-Email`: Standard reverse-proxy user headers
+

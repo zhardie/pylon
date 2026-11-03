@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -362,6 +366,279 @@ func TestGitHubRegisterHandler_MissingCode(t *testing.T) {
 
 	if rec.Result().StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 Bad Request for missing code, got %d", rec.Result().StatusCode)
+	}
+}
+
+func createAuthenticatedClaimsRequest(method, urlStr string, claims *UserClaims) *http.Request {
+	req := httptest.NewRequest(method, urlStr, nil)
+	sessionStore := getSessionStore()
+	session, _ := sessionStore.Get(req, "pylon")
+	session.Values["email"] = claims.Email
+	session.Values["user_id"] = claims.ID
+	session.Values["first_name"] = claims.FirstName
+	session.Values["last_name"] = claims.LastName
+	session.Values["name"] = claims.Name
+	session.Values["avatar_url"] = claims.AvatarURL
+	session.Values["provider"] = claims.Provider
+
+	rec := httptest.NewRecorder()
+	_ = session.Save(req, rec)
+
+	for _, cookie := range rec.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+
+	return req
+}
+
+func TestClaimsHandler_Unauthenticated(t *testing.T) {
+	setupTestConfig()
+
+	req := httptest.NewRequest("GET", "https://example.com/pylon/claims", nil)
+	rec := httptest.NewRecorder()
+	mainProxyHandler(rec, req)
+
+	res := rec.Result()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", res.StatusCode)
+	}
+
+	var resp ClaimsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode claims JSON: %v", err)
+	}
+	if resp.Authenticated {
+		t.Errorf("expected Authenticated = false, got true")
+	}
+	if resp.Error != "unauthorized" {
+		t.Errorf("expected Error = unauthorized, got %q", resp.Error)
+	}
+}
+
+func TestClaimsHandler_Authenticated(t *testing.T) {
+	setupTestConfig()
+
+	claims := &UserClaims{
+		ID:        "sub-12345",
+		Email:     "alice@example.com",
+		FirstName: "Alice",
+		LastName:  "Smith",
+		Name:      "Alice Smith",
+		AvatarURL: "https://example.com/alice.png",
+		Provider:  "google",
+	}
+
+	req := createAuthenticatedClaimsRequest("GET", "https://example.com/pylon/claims", claims)
+	rec := httptest.NewRecorder()
+	mainProxyHandler(rec, req)
+
+	res := rec.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", res.StatusCode)
+	}
+
+	var resp ClaimsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode claims JSON: %v", err)
+	}
+
+	if !resp.Authenticated {
+		t.Errorf("expected Authenticated = true")
+	}
+	if resp.ID != "sub-12345" {
+		t.Errorf("expected ID = sub-12345, got %q", resp.ID)
+	}
+	if resp.Email != "alice@example.com" {
+		t.Errorf("expected Email = alice@example.com, got %q", resp.Email)
+	}
+	if resp.FirstName != "Alice" {
+		t.Errorf("expected FirstName = Alice, got %q", resp.FirstName)
+	}
+	if resp.LastName != "Smith" {
+		t.Errorf("expected LastName = Smith, got %q", resp.LastName)
+	}
+	if resp.Name != "Alice Smith" {
+		t.Errorf("expected Name = Alice Smith, got %q", resp.Name)
+	}
+	if resp.AvatarURL != "https://example.com/alice.png" {
+		t.Errorf("expected AvatarURL = https://example.com/alice.png, got %q", resp.AvatarURL)
+	}
+	if resp.Provider != "google" {
+		t.Errorf("expected Provider = google, got %q", resp.Provider)
+	}
+}
+
+func TestClaimsHandler_LegacySession(t *testing.T) {
+	setupTestConfig()
+
+	// Legacy session only has email
+	req := createAuthenticatedRequest("GET", "https://example.com/pylon/claims", "legacy@example.com")
+	rec := httptest.NewRecorder()
+	mainProxyHandler(rec, req)
+
+	res := rec.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", res.StatusCode)
+	}
+
+	var resp ClaimsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode claims JSON: %v", err)
+	}
+
+	if !resp.Authenticated {
+		t.Errorf("expected Authenticated = true")
+	}
+	if resp.Email != "legacy@example.com" {
+		t.Errorf("expected Email = legacy@example.com, got %q", resp.Email)
+	}
+	if resp.ID != "legacy@example.com" {
+		t.Errorf("expected fallback ID = legacy@example.com, got %q", resp.ID)
+	}
+}
+
+func TestProxy_HeadersInjectedAndStripped(t *testing.T) {
+	setupTestConfig()
+
+	var receivedHeaders http.Header
+	testBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("backend ok"))
+	}))
+	defer testBackend.Close()
+
+	backendURL, err := url.Parse(testBackend.URL)
+	if err != nil {
+		t.Fatalf("failed to parse backend url: %v", err)
+	}
+
+	pd := &ProxyDetails{
+		Internal:                   testBackend.URL,
+		AllowedUsers:               []string{"alice@example.com"},
+		UnauthenticatedRoutesRegex: regexp.MustCompile("^$"),
+		ReverseProxy:               httputil.NewSingleHostReverseProxy(backendURL),
+	}
+
+	claims := &UserClaims{
+		ID:        "sub-99999",
+		Email:     "alice@example.com",
+		FirstName: "Alice",
+		LastName:  "Wonderland",
+		Name:      "Alice Wonderland",
+		AvatarURL: "https://example.com/avatar.png",
+		Provider:  "github",
+	}
+
+	req := createAuthenticatedClaimsRequest("GET", "https://example.com/api/test", claims)
+	// Try spoofing a header from client
+	req.Header.Set("X-Pylon-User-Id", "spoofed-attacker-id")
+	req.Header.Set("X-Pylon-Spoofed", "malicious-value")
+
+	rec := httptest.NewRecorder()
+	pd.proxy(rec, req)
+
+	if rec.Result().StatusCode != http.StatusOK {
+		t.Fatalf("expected proxy status 200, got %d", rec.Result().StatusCode)
+	}
+
+	if receivedHeaders.Get("X-Pylon-User-Id") != "sub-99999" {
+		t.Errorf("expected X-Pylon-User-Id = sub-99999, got %q", receivedHeaders.Get("X-Pylon-User-Id"))
+	}
+	if receivedHeaders.Get("X-Pylon-User-Email") != "alice@example.com" {
+		t.Errorf("expected X-Pylon-User-Email = alice@example.com, got %q", receivedHeaders.Get("X-Pylon-User-Email"))
+	}
+	if receivedHeaders.Get("X-Pylon-User-First-Name") != "Alice" {
+		t.Errorf("expected X-Pylon-User-First-Name = Alice, got %q", receivedHeaders.Get("X-Pylon-User-First-Name"))
+	}
+	if receivedHeaders.Get("X-Pylon-User-Last-Name") != "Wonderland" {
+		t.Errorf("expected X-Pylon-User-Last-Name = Wonderland, got %q", receivedHeaders.Get("X-Pylon-User-Last-Name"))
+	}
+	if receivedHeaders.Get("X-Pylon-User-Name") != "Alice Wonderland" {
+		t.Errorf("expected X-Pylon-User-Name = Alice Wonderland, got %q", receivedHeaders.Get("X-Pylon-User-Name"))
+	}
+	if receivedHeaders.Get("X-Pylon-User-Avatar") != "https://example.com/avatar.png" {
+		t.Errorf("expected X-Pylon-User-Avatar = https://example.com/avatar.png, got %q", receivedHeaders.Get("X-Pylon-User-Avatar"))
+	}
+	if receivedHeaders.Get("X-Pylon-User-Provider") != "github" {
+		t.Errorf("expected X-Pylon-User-Provider = github, got %q", receivedHeaders.Get("X-Pylon-User-Provider"))
+	}
+	if receivedHeaders.Get("X-Forwarded-User") != "alice@example.com" {
+		t.Errorf("expected X-Forwarded-User = alice@example.com, got %q", receivedHeaders.Get("X-Forwarded-User"))
+	}
+	if receivedHeaders.Get("X-Pylon-Spoofed") != "" {
+		t.Errorf("expected spoofed header X-Pylon-Spoofed to be stripped, got %q", receivedHeaders.Get("X-Pylon-Spoofed"))
+	}
+}
+
+func TestClaimsFromIdToken(t *testing.T) {
+	// Construct test JWT payload
+	payload := map[string]interface{}{
+		"sub":            "test-sub-123",
+		"email":          "jwtuser@example.com",
+		"email_verified": true,
+		"given_name":     "Bob",
+		"family_name":    "Builder",
+		"name":           "Bob Builder",
+		"picture":        "https://example.com/bob.jpg",
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadBytes)
+	fakeJWT := "eyJhbGciOiJIUzI1NiJ9." + payloadB64 + ".fakesignature"
+
+	claims, err := claimsFromIdToken(fakeJWT)
+	if err != nil {
+		t.Fatalf("claimsFromIdToken failed: %v", err)
+	}
+	if claims.ID != "test-sub-123" {
+		t.Errorf("expected ID = test-sub-123, got %q", claims.ID)
+	}
+	if claims.Email != "jwtuser@example.com" {
+		t.Errorf("expected Email = jwtuser@example.com, got %q", claims.Email)
+	}
+	if claims.FirstName != "Bob" {
+		t.Errorf("expected FirstName = Bob, got %q", claims.FirstName)
+	}
+	if claims.LastName != "Builder" {
+		t.Errorf("expected LastName = Builder, got %q", claims.LastName)
+	}
+	if claims.Name != "Bob Builder" {
+		t.Errorf("expected Name = Bob Builder, got %q", claims.Name)
+	}
+	if claims.AvatarURL != "https://example.com/bob.jpg" {
+		t.Errorf("expected AvatarURL = https://example.com/bob.jpg, got %q", claims.AvatarURL)
+	}
+}
+
+func TestNormalizeClaims(t *testing.T) {
+	// Splitting full name when first and last are missing
+	c1 := &UserClaims{
+		Email: "user1@example.com",
+		Name:  "Grace Hopper",
+	}
+	normalizeClaims(c1)
+	if c1.FirstName != "Grace" || c1.LastName != "Hopper" {
+		t.Errorf("expected Grace Hopper split into Grace and Hopper, got %q / %q", c1.FirstName, c1.LastName)
+	}
+
+	// Combining first and last when name is missing
+	c2 := &UserClaims{
+		Email:     "user2@example.com",
+		FirstName: "Ada",
+		LastName:  "Lovelace",
+	}
+	normalizeClaims(c2)
+	if c2.Name != "Ada Lovelace" {
+		t.Errorf("expected combined name Ada Lovelace, got %q", c2.Name)
+	}
+
+	// Fallback ID
+	c3 := &UserClaims{
+		Email: "user3@example.com",
+	}
+	normalizeClaims(c3)
+	if c3.ID != "user3@example.com" {
+		t.Errorf("expected ID fallback to email, got %q", c3.ID)
 	}
 }
 
