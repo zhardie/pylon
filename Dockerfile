@@ -1,4 +1,4 @@
-FROM node:lts-alpine as frontend_builder
+FROM node:20-alpine as frontend_builder
 WORKDIR /build
 COPY ./frontend .
 RUN npm install
