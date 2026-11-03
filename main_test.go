@@ -288,7 +288,7 @@ func TestLogoutHandler(t *testing.T) {
 	if res.StatusCode != http.StatusFound {
 		t.Fatalf("expected 302 Found, got %d", res.StatusCode)
 	}
-	if loc := res.Header.Get("Location"); loc != "/pylon/login" {
+	if loc := res.Header.Get("Location"); !strings.HasPrefix(loc, "/pylon/login") {
 		t.Errorf("expected redirect to /pylon/login, got %q", loc)
 	}
 
@@ -639,6 +639,48 @@ func TestNormalizeClaims(t *testing.T) {
 	normalizeClaims(c3)
 	if c3.ID != "user3@example.com" {
 		t.Errorf("expected ID fallback to email, got %q", c3.ID)
+	}
+}
+
+func TestLoginGateway_SingleProviderBypassAndLogout(t *testing.T) {
+	setupTestConfig()
+
+	// Configure exactly one provider
+	cfgMu.Lock()
+	cfg.OAuthProviders = map[string]OAuthProvider{
+		"google": {
+			ID:       "google",
+			Name:     "Google",
+			Type:     "google",
+			ClientID: "dummy-client-id",
+		},
+	}
+	cfgMu.Unlock()
+
+	// Normal visit with 1 provider -> should bypass and redirect to /pylon/auth/google
+	reqNormal := httptest.NewRequest("GET", "https://example.com/pylon/login", nil)
+	recNormal := httptest.NewRecorder()
+	loginGatewayHandler(recNormal, reqNormal)
+	if recNormal.Result().StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 redirect for single provider bypass, got %d", recNormal.Result().StatusCode)
+	}
+	if loc := recNormal.Header().Get("Location"); !strings.Contains(loc, "/pylon/auth/google") {
+		t.Errorf("expected redirect to /pylon/auth/google, got %q", loc)
+	}
+
+	// Post-logout visit -> should NOT bypass, but show login page with sign out notice
+	reqLogout := httptest.NewRequest("GET", "https://example.com/pylon/login?logged_out=true", nil)
+	recLogout := httptest.NewRecorder()
+	loginGatewayHandler(recLogout, reqLogout)
+	if recLogout.Result().StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK after logout, got %d", recLogout.Result().StatusCode)
+	}
+	body := recLogout.Body.String()
+	if !strings.Contains(body, "signed out") {
+		t.Errorf("expected signed out notice in login page")
+	}
+	if !strings.Contains(body, "Login with Google") {
+		t.Errorf("expected Login with Google button in login page")
 	}
 }
 

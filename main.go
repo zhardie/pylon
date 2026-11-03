@@ -552,6 +552,7 @@ func mainProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 func loginGatewayHandler(w http.ResponseWriter, r *http.Request) {
 	referer := r.URL.Query().Get("referer")
+	isLoggedOut := r.URL.Query().Get("logged_out") == "true"
 
 	cfgMu.RLock()
 	providersList := cfg.OAuthProviders
@@ -564,8 +565,8 @@ func loginGatewayHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If exactly one provider is configured, bypass the gate and redirect directly
-	if len(providersList) == 1 {
+	// If exactly one provider is configured, bypass the gate and redirect directly (unless explicitly logging out)
+	if len(providersList) == 1 && !isLoggedOut {
 		for key := range providersList {
 			http.Redirect(w, r, fmt.Sprintf("/pylon/auth/%s?referer=%s", key, referer), http.StatusFound)
 			return
@@ -575,6 +576,11 @@ func loginGatewayHandler(w http.ResponseWriter, r *http.Request) {
 	// Render a beautifully designed glassmorphic login gate
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+
+	var noticeHTML string
+	if isLoggedOut {
+		noticeHTML = `<div style="background: rgba(34, 197, 94, 0.15); border: 1px solid rgba(34, 197, 94, 0.3); color: #4ade80; padding: 10px 16px; border-radius: 12px; margin-bottom: 20px; font-size: 14px; font-weight: 500;">You have been signed out successfully.</div>`
+	}
 
 	var buttonsHTML strings.Builder
 	for key, p := range providersList {
@@ -671,6 +677,7 @@ func loginGatewayHandler(w http.ResponseWriter, r *http.Request) {
 	<body>
 		<div class="container">
 			<h1>Pylon Gateway</h1>
+			%s
 			<p>Select a provider below to authenticate and access this resource.</p>
 			<div style="display: flex; flex-direction: column;">
 				%s
@@ -678,7 +685,7 @@ func loginGatewayHandler(w http.ResponseWriter, r *http.Request) {
 		</div>
 	</body>
 	</html>
-	`, buttonsHTML.String())
+	`, noticeHTML, buttonsHTML.String())
 
 	w.Write([]byte(html))
 }
@@ -1743,19 +1750,23 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	tldn := cfg.TLDN
 	cfgMu.RUnlock()
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     "pylon",
-		Value:    "",
-		Domain:   tldn,
-		Path:     "/",
-		MaxAge:   -1,
-		Expires:  time.Unix(0, 0),
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	// Ensure cookies are cleared across various potential domain scopes
+	cookieDomains := []string{tldn, "." + tldn, "", r.Host}
+	for _, domain := range cookieDomains {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "pylon",
+			Value:    "",
+			Domain:   domain,
+			Path:     "/",
+			MaxAge:   -1,
+			Expires:  time.Unix(0, 0),
+			HttpOnly: true,
+			Secure:   r.TLS != nil,
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
 
-	http.Redirect(w, r, "/pylon/login", http.StatusFound)
+	http.Redirect(w, r, "/pylon/login?logged_out=true", http.StatusFound)
 }
 
 func appsDashboardHandler(w http.ResponseWriter, r *http.Request) {
