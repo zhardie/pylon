@@ -142,3 +142,18 @@ On routes with `allow_oauth_clients`, each host is its own OAuth issuer:
 - Pylon consumes its token and forwards the same `X-Pylon-*` identity headers as for browser sessions; the upstream never sees the token.
 - Registered clients and grants are stored (tokens hashed) in `oauth_state.json` next to `config.json`, so connections survive restarts.
 - Connected clients are listed in the route's advanced settings in the admin dashboard, where they can be revoked.
+
+### Upstream credentials
+If the internal service needs its own credential (for example an MCP server that expects an API key), add it under **Upstream Request Headers** in the route's advanced settings, or in `config.json`:
+
+```json
+{
+    "internal": "http://192.168.1.20:8080",
+    "external": "unraid-mcp.yourdomain.com",
+    "allowed_users": ["you@yourdomain.com"],
+    "allow_oauth_clients": true,
+    "upstream_headers": { "Authorization": "Bearer your-upstream-api-key" }
+}
+```
+
+Pylon adds these headers to every request it has authenticated (browser session or OAuth token) and never on unauthenticated bypass routes, so the client only ever holds a Pylon token and the upstream key stays on the server.
