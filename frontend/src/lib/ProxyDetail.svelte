@@ -35,6 +35,24 @@ function removeRoute(route) {
     config = config
 }
 
+let newHeaderName = ""
+let newHeaderValue = ""
+
+function addHeader() {
+    const name = newHeaderName.trim()
+    if (!name || !newHeaderValue) return
+    proxyDetail.upstream_headers = { ...(proxyDetail.upstream_headers || {}), [name]: newHeaderValue }
+    newHeaderName = ""
+    newHeaderValue = ""
+    config = config
+}
+
+function removeHeader(name) {
+    const { [name]: _removed, ...rest } = proxyDetail.upstream_headers
+    proxyDetail.upstream_headers = rest
+    config = config
+}
+
 function toggleOAuthClients(e) {
     proxyDetail.allow_oauth_clients = e.target.checked
     config = config
@@ -189,6 +207,40 @@ function closeDialog() {
                         {/if}
                     </div>
                 {/if}
+            </div>
+
+            <div class="section-divider"></div>
+
+            <!-- SECTION 4: UPSTREAM HEADERS -->
+            <div class="modal-section">
+                <h4>🗝️ Upstream Request Headers</h4>
+                <p class="section-desc">Headers Pylon adds to authenticated requests before forwarding them, such as an API key the internal service requires (e.g. <code>Authorization</code> = <code>Bearer &lt;key&gt;</code> or <code>x-api-key</code>). Clients never see these values, and they are not sent on unauthenticated routes.</p>
+
+                <div class="list-container">
+                    {#if proxyDetail.upstream_headers && Object.keys(proxyDetail.upstream_headers).length > 0}
+                        <div class="list-items">
+                            {#each Object.keys(proxyDetail.upstream_headers) as name}
+                                <div class="list-item">
+                                    <span class="item-text"><code class="item-code">{name}</code> <span class="item-meta">· value hidden</span></span>
+                                    <button class="item-action delete" on:click={() => removeHeader(name)} aria-label="Remove Header">
+                                        <span class="material-icons">delete</span>
+                                    </button>
+                                </div>
+                            {/each}
+                        </div>
+                    {:else}
+                        <div class="list-empty">No upstream headers configured.</div>
+                    {/if}
+                </div>
+
+                <div class="add-input-group">
+                    <input type="text" placeholder="Header name, e.g. Authorization" bind:value={newHeaderName} />
+                    <input type="password" autocomplete="off" placeholder="Value" bind:value={newHeaderValue} on:keydown={(e) => e.key === 'Enter' && addHeader()} />
+                    <button class="btn-primary-sm" on:click={addHeader}>
+                        <span class="material-icons">add</span>
+                        <span>Add</span>
+                    </button>
+                </div>
             </div>
         </div>
         

@@ -484,3 +484,30 @@ func TestLoginGateway_EscapesReferer(t *testing.T) {
 		t.Errorf("referer = %q, want %q", got, referer)
 	}
 }
+
+func TestUpstreamHeaders(t *testing.T) {
+	setupOAuthTest(t, nil)
+	proxiesMu.Lock()
+	proxies[oauthTestHost].UpstreamHeaders = map[string]string{"Authorization": "Bearer upstream-key"}
+	proxies[oauthTestHost].UnauthenticatedRoutesRegex = regexp.MustCompile("^/public")
+	proxiesMu.Unlock()
+
+	// OAuth client: Pylon's token is replaced by the upstream credential.
+	_, tokens := obtainTokens(t, "alice@example.com")
+	rec := serve(bearerRequest(oauthTestHost, tokens["access_token"].(string)))
+	if got := rec.Header().Get("X-Seen-Authorization"); rec.Code != 200 || got != "Bearer upstream-key" {
+		t.Errorf("oauth request: status %d, upstream Authorization %q", rec.Code, got)
+	}
+
+	// Browser session gets it too.
+	rec = serve(createAuthenticatedRequest("GET", "https://"+oauthTestHost+"/", "alice@example.com"))
+	if got := rec.Header().Get("X-Seen-Authorization"); got != "Bearer upstream-key" {
+		t.Errorf("session request: upstream Authorization %q", got)
+	}
+
+	// Unauthenticated bypass routes never carry the credential.
+	rec = serve(httptest.NewRequest("GET", "https://"+oauthTestHost+"/public/x", nil))
+	if got := rec.Header().Get("X-Seen-Authorization"); rec.Code != 200 || got != "" {
+		t.Errorf("bypass route: status %d, upstream Authorization %q", rec.Code, got)
+	}
+}

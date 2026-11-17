@@ -50,6 +50,9 @@ type ProxyRouteConfig struct {
 	// AllowOAuthClients lets non-browser clients (e.g. MCP connectors) reach
 	// this route with OAuth bearer tokens issued by Pylon.
 	AllowOAuthClients bool `json:"allow_oauth_clients,omitempty"`
+	// UpstreamHeaders are added to authenticated requests before they are
+	// forwarded, e.g. an API key the internal service requires.
+	UpstreamHeaders map[string]string `json:"upstream_headers,omitempty"`
 }
 
 type Config struct {
@@ -85,6 +88,7 @@ type ProxyDetails struct {
 	UnauthenticatedRoutesRegex *regexp.Regexp
 	ReverseProxy               *httputil.ReverseProxy
 	OAuthEnabled               bool
+	UpstreamHeaders            map[string]string
 }
 
 type AppItem struct {
@@ -315,6 +319,7 @@ func loadConfig() error {
 			UnauthenticatedRoutesRegex: unauthenticatedRegex,
 			ReverseProxy:               rp,
 			OAuthEnabled:               p.AllowOAuthClients,
+			UpstreamHeaders:            p.UpstreamHeaders,
 		}
 	}
 
@@ -1357,6 +1362,13 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 		}
 		if claims.Provider != "" {
 			r.Header.Set("X-Pylon-User-Provider", claims.Provider)
+		}
+		// Credentials for the internal service. Only sent for requests Pylon
+		// has authenticated, never on unauthenticated bypass routes.
+		for name, value := range pd.UpstreamHeaders {
+			if name = strings.TrimSpace(name); name != "" {
+				r.Header.Set(name, value)
+			}
 		}
 	} else {
 		r.Header.Del("X-Forwarded-User")
