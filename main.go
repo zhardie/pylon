@@ -47,6 +47,9 @@ type ProxyRouteConfig struct {
 	External              string   `json:"external"`
 	AllowedUsers          []string `json:"allowed_users"`
 	UnauthenticatedRoutes []string `json:"unauthenticated_routes"`
+	// AllowOAuthClients lets non-browser clients (e.g. MCP connectors) reach
+	// this route with OAuth bearer tokens issued by Pylon.
+	AllowOAuthClients bool `json:"allow_oauth_clients,omitempty"`
 }
 
 type Config struct {
@@ -81,6 +84,7 @@ type ProxyDetails struct {
 	AllowedUsers               []string               `json:"allowed_users"`
 	UnauthenticatedRoutesRegex *regexp.Regexp
 	ReverseProxy               *httputil.ReverseProxy
+	OAuthEnabled               bool
 }
 
 type AppItem struct {
@@ -156,6 +160,12 @@ func main() {
 	frontend.HandleFunc("/dns/create", DNSCreateHandler)
 	frontend.HandleFunc("/dns/sync", DNSSyncHandler)
 	frontend.HandleFunc("/dns/test", DNSTestHandler)
+	frontend.HandleFunc("/oauth/grants", OAuthGrantsHandler)
+
+	// Load registered OAuth clients and grants (for routes with allow_oauth_clients)
+	if err := oauthState.load(oauthStatePath()); err != nil {
+		log.Printf("Failed to load OAuth state, starting empty: %v", err)
+	}
 
 	// Start Proxy Server (ports :http and :https)
 	server.startServer()
@@ -304,6 +314,7 @@ func loadConfig() error {
 			AllowedUsers:               p.AllowedUsers,
 			UnauthenticatedRoutesRegex: unauthenticatedRegex,
 			ReverseProxy:               rp,
+			OAuthEnabled:               p.AllowOAuthClients,
 		}
 	}
 
@@ -460,6 +471,11 @@ func mainProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// OAuth authorization server endpoints for routes that allow OAuth clients
+	if handleOAuthServer(w, r) {
+		return
+	}
+
 	// 1. Check if login gateway path
 	if r.URL.Path == "/pylon/login" {
 		loginGatewayHandler(w, r)
@@ -568,7 +584,7 @@ func loginGatewayHandler(w http.ResponseWriter, r *http.Request) {
 	// If exactly one provider is configured, bypass the gate and redirect directly (unless explicitly logging out)
 	if len(providersList) == 1 && !isLoggedOut {
 		for key := range providersList {
-			http.Redirect(w, r, fmt.Sprintf("/pylon/auth/%s?referer=%s", key, referer), http.StatusFound)
+			http.Redirect(w, r, fmt.Sprintf("/pylon/auth/%s?referer=%s", key, url.QueryEscape(referer)), http.StatusFound)
 			return
 		}
 	}
@@ -605,7 +621,7 @@ func loginGatewayHandler(w http.ResponseWriter, r *http.Request) {
 			<a href="/pylon/auth/%s?referer=%s" class="login-btn" style="background-color: %s;">
 				<span>Login with %s</span>
 			</a>
-		`, key, referer, brandColor, displayName))
+		`, key, url.QueryEscape(referer), brandColor, html.EscapeString(displayName)))
 	}
 
 	html := fmt.Sprintf(`
@@ -1253,9 +1269,28 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// OAuth clients: a valid Pylon access token for this host stands in for the
+	// session cookie. Pylon tokens are consumed here and never forwarded upstream.
+	viaOAuth := false
+	rejectedToken := false
+	if pd.OAuthEnabled && strings.HasPrefix(oauthBearerToken(r), oauthAccessTokenPrefix) {
+		if tokenClaims := oauthClaimsForRequest(r); tokenClaims != nil {
+			claims = tokenClaims
+			emailVal = tokenClaims.Email
+			viaOAuth = true
+		} else {
+			rejectedToken = true
+		}
+		r.Header.Del("Authorization")
+	}
+
 	// Authenticate and Authorize
 	if !pd.isUnauthenticatedRoute(r.URL.Path) {
 		if emailVal == nil {
+			if pd.OAuthEnabled && (rejectedToken || oauthWantsChallenge(r)) {
+				oauthWriteChallenge(w, r, rejectedToken)
+				return
+			}
 			referer := fmt.Sprintf("%s%s", r.Host, r.URL.Path)
 			// Redirect to the unified login gateway
 			http.Redirect(w, r, fmt.Sprintf("/pylon/login?referer=%s", referer), http.StatusFound)
@@ -1263,6 +1298,11 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		email := emailVal.(string)
+		if viaOAuth && !pd.userInAllowedList(email) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			log.Printf("oauth client user %s not allowed for target host: %s", email, r.Host)
+			return
+		}
 		if !pd.userInAllowedList(email) {
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprintf(w, `<h3>User %s is unauthorized to access this resource.</h3>
@@ -1321,6 +1361,11 @@ func (pd *ProxyDetails) proxy(w http.ResponseWriter, r *http.Request) {
 	} else {
 		r.Header.Del("X-Forwarded-User")
 		r.Header.Del("X-Forwarded-Email")
+	}
+
+	// Long-lived event streams (MCP uses SSE) must outlive the server write timeout.
+	if pd.OAuthEnabled && strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 	}
 
 	pd.ReverseProxy.ServeHTTP(w, r)

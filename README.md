@@ -10,6 +10,7 @@ This is especially useful if you want to run several services on a homelab witho
 - 🌐 **DNS Provider Integrations**: Automated CNAME provisioning and DNS resolution health checks via **Cloudflare DNS API**.
 - 🚀 **Admin Dashboard**: Web UI to manage routes, access controls, DNS status, and authentication settings in real time.
 - 📱 **User Portal**: Fast application dashboard for authorized users to access all allowed web services.
+- 🤖 **OAuth for MCP Connectors**: Pylon can act as an OAuth 2.1 authorization server so clients like Claude can reach MCP servers behind it.
 - 👤 **Identity Forwarding & User Claims**: Protected SPAs and backend services can piggyback off Pylon auth via `/pylon/claims` or injected `X-Pylon-*` request headers.
 
 ## Prerequisites:
@@ -112,3 +113,32 @@ When Pylon proxies requests to internal services, it strips untrusted client hea
 - `X-Pylon-User-Provider`: Identity provider type (e.g., `google`, `github`, `microsoft`, `gitlab`, `oidc`)
 - `X-Forwarded-User` & `X-Forwarded-Email`: Standard reverse-proxy user headers
 
+## OAuth Clients & MCP Servers
+
+Browser sessions don't work for non-browser clients such as Claude's custom connectors, which authenticate to remote MCP servers with OAuth. Pylon can be the OAuth 2.1 authorization server for a route, so an MCP server with no authentication of its own can sit safely behind it.
+
+### Setup
+1. Add a proxy route for the MCP server (e.g. `unraid-mcp.yourdomain.com` → `http://192.168.1.20:8080`).
+2. Open the route's advanced settings, add the emails allowed to use it under **Authorized User Emails**, and enable **Allow OAuth clients on this route** (or set `"allow_oauth_clients": true` on the route in `config.json`).
+3. In Claude, add a custom connector with the MCP server's URL, e.g. `https://unraid-mcp.yourdomain.com/mcp`. Claude discovers Pylon's OAuth endpoints, registers itself, and sends you to Pylon to sign in with your identity provider and approve the connection.
+
+> Leave **Authorized User Emails** empty and *anyone* who can sign in to your identity provider (e.g. any Google account) can connect a client. Always list the allowed users on MCP routes.
+
+### How it works
+On routes with `allow_oauth_clients`, each host is its own OAuth issuer:
+
+| Endpoint | Purpose |
+|---|---|
+| `/.well-known/oauth-protected-resource` | Protected resource metadata (RFC 9728) |
+| `/.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414) |
+| `/pylon/oauth/register` | Dynamic client registration (RFC 7591) |
+| `/pylon/oauth/authorize` | Authorization code flow with mandatory PKCE (S256) and a consent page |
+| `/pylon/oauth/token` | Code exchange and refresh (refresh tokens rotate) |
+| `/pylon/oauth/revoke` | Token revocation (RFC 7009) |
+
+- Unauthenticated non-browser requests get `401` with a `WWW-Authenticate: Bearer resource_metadata=...` challenge; browsers still get the login redirect.
+- Access tokens last 1 hour and are valid only for the host they were issued for. Refresh tokens expire after 30 days without use.
+- The route's allowed users are enforced on every request and refresh, so removing a user cuts off their clients.
+- Pylon consumes its token and forwards the same `X-Pylon-*` identity headers as for browser sessions; the upstream never sees the token.
+- Registered clients and grants are stored (tokens hashed) in `oauth_state.json` next to `config.json`, so connections survive restarts.
+- Connected clients are listed in the route's advanced settings in the admin dashboard, where they can be revoked.

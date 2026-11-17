@@ -35,6 +35,40 @@ function removeRoute(route) {
     config = config
 }
 
+function toggleOAuthClients(e) {
+    proxyDetail.allow_oauth_clients = e.target.checked
+    config = config
+}
+
+// Active OAuth client grants for this route (tokens issued to MCP connectors etc.)
+let grants = []
+let grantsFor = null
+
+async function loadGrants(host) {
+    grantsFor = host
+    grants = []
+    try {
+        const res = await fetch('/oauth/grants')
+        if (!res.ok) return
+        const data = await res.json()
+        if (grantsFor === host) grants = (data.grants || []).filter(g => g.host === host)
+    } catch (e) {
+        console.error('Failed to load OAuth grants', e)
+    }
+}
+
+async function revokeGrant(grant) {
+    try {
+        const res = await fetch(`/oauth/grants?id=${encodeURIComponent(grant.id)}`, { method: 'DELETE' })
+        if (res.ok || res.status === 404) grants = grants.filter(g => g.id !== grant.id)
+    } catch (e) {
+        console.error('Failed to revoke OAuth grant', e)
+    }
+}
+
+$: if (proxyDetail && proxyDetail.external && proxyDetail.external !== grantsFor) loadGrants(proxyDetail.external)
+$: if (!proxyDetail) grantsFor = null
+
 function closeDialog() {
     proxyDetail = null
 }
@@ -120,6 +154,41 @@ function closeDialog() {
                         <span>Add</span>
                     </button>
                 </div>
+            </div>
+
+            <div class="section-divider"></div>
+
+            <!-- SECTION 3: OAUTH CLIENTS (MCP) -->
+            <div class="modal-section">
+                <h4>🤖 OAuth Clients (MCP Connectors)</h4>
+                <p class="section-desc">Let non-browser clients such as Claude reach this route with OAuth bearer tokens issued by Pylon. Users still sign in through your identity provider, approve each client, and must be on the authorized list above. Use this for MCP servers; add the route's URL (e.g. <code>https://{proxyDetail.external || 'host'}/mcp</code>) as a custom connector.</p>
+
+                <label class="toggle-row">
+                    <input type="checkbox" checked={!!proxyDetail.allow_oauth_clients} on:change={toggleOAuthClients} />
+                    <span>Allow OAuth clients on this route</span>
+                </label>
+
+                {#if proxyDetail.allow_oauth_clients || grants.length > 0}
+                    <div class="list-container">
+                        {#if grants.length > 0}
+                            <div class="list-items">
+                                {#each grants as grant}
+                                    <div class="list-item">
+                                        <span class="item-text">
+                                            {grant.client_name || grant.client_id}
+                                            <span class="item-meta">· {grant.email} · last used {new Date(grant.last_used).toLocaleDateString()}</span>
+                                        </span>
+                                        <button class="item-action delete" on:click={() => revokeGrant(grant)} aria-label="Revoke access" title="Revoke access">
+                                            <span class="material-icons">link_off</span>
+                                        </button>
+                                    </div>
+                                {/each}
+                            </div>
+                        {:else}
+                            <div class="list-empty">No clients are connected to this route.</div>
+                        {/if}
+                    </div>
+                {/if}
             </div>
         </div>
         
@@ -313,6 +382,27 @@ function closeDialog() {
     .item-action.delete:hover {
         background: var(--danger-bg);
         color: #ef4444;
+    }
+
+    .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 14px;
+        color: var(--text-main);
+        margin-bottom: 16px;
+        cursor: pointer;
+    }
+
+    .toggle-row input {
+        width: 16px;
+        height: 16px;
+        accent-color: #38bdf8;
+    }
+
+    .item-meta {
+        color: var(--helper-text);
+        font-size: 12.5px;
     }
 
     .list-empty {
